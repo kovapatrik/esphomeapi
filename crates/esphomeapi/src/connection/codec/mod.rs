@@ -3,7 +3,7 @@ mod plain;
 
 use std::sync::{Arc, RwLock};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 pub use noise::Noise;
 pub use plain::Plain;
 use tokio::sync::{mpsc, oneshot};
@@ -159,7 +159,11 @@ pub trait FrameCodec:
   Encoder<EspHomeMessage, Error = std::io::Error>
   + Decoder<Item = EspHomeMessage, Error = std::io::Error>
 {
-  fn parse_frame(&self, src: &mut bytes::BytesMut) -> Result<(u8, u8), std::io::Error>;
+  fn parse_frame(
+    &self,
+    src: &mut bytes::BytesMut,
+    // TODO: refactor tuple return
+  ) -> Result<Option<(BytesMut, usize)>, std::io::Error>;
   fn get_handshake_frame(&mut self) -> Option<Bytes>;
   fn close(&mut self);
 }
@@ -171,7 +175,10 @@ pub enum EspHomeCodec {
 }
 
 impl FrameCodec for EspHomeCodec {
-  fn parse_frame(&self, src: &mut bytes::BytesMut) -> Result<(u8, u8), std::io::Error> {
+  fn parse_frame(
+    &self,
+    src: &mut bytes::BytesMut,
+  ) -> Result<Option<(BytesMut, usize)>, std::io::Error> {
     match self {
       EspHomeCodec::Noise(codec) => codec.read().unwrap().parse_frame(src),
       EspHomeCodec::Plain(codec) => codec.read().unwrap().parse_frame(src),

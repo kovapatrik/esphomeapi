@@ -1,8 +1,10 @@
-use bytes::{BufMut, Bytes};
+use bytes::{BufMut, Bytes, BytesMut};
+use bytes_varint::*;
 use tokio_util::codec::{Decoder, Encoder};
-use varuint::*;
 
-use super::{EspHomeMessage, FrameCodec};
+use crate::connection::codec::FrameCodec;
+
+use super::EspHomeMessage;
 
 #[derive(Clone)]
 pub struct Plain {}
@@ -14,16 +16,23 @@ impl Plain {
 }
 
 impl FrameCodec for Plain {
-  fn parse_frame(&self, src: &mut bytes::BytesMut) -> Result<(u8, u8), std::io::Error> {
-    let preamble: u8 = ReadVarint::read_varint(&mut src.as_ref()).unwrap();
+  fn parse_frame(
+    &self,
+    src: &mut bytes::BytesMut,
+  ) -> Result<Option<(BytesMut, usize)>, std::io::Error> {
+    if src.is_empty() {
+      return Ok(None);
+    }
+
+    let preamble = src.try_get_usize_varint().unwrap();
     if preamble != 0x00 {
       return Err(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
         "Invalid preamble",
       ));
     }
-    let length: u8 = ReadVarint::read_varint(&mut src.as_ref()).unwrap();
-    let msg_type: u8 = ReadVarint::read_varint(&mut src.as_ref()).unwrap();
+    let length = src.try_get_usize_varint().unwrap();
+    let msg_type = src.try_get_usize_varint().unwrap();
 
     if src.len() < length as usize {
       return Err(std::io::Error::new(
@@ -32,7 +41,9 @@ impl FrameCodec for Plain {
       ));
     }
 
-    Ok((length, msg_type))
+    let msg = src.split_to(length as usize);
+
+    Ok(Some((msg, msg_type)))
   }
 
   fn get_handshake_frame(&mut self) -> Option<Bytes> {
@@ -47,12 +58,11 @@ impl Decoder for Plain {
   type Error = std::io::Error;
 
   fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-    if src.is_empty() {
-      return Ok(None);
-    }
-
-    let (length, msg_type) = self.parse_frame(src)?;
-    let msg = src.split_to(length as usize);
+    let (msg, msg_type) = match self.parse_frame(src) {
+      Ok(Some((frame, msg_type))) => (frame, msg_type),
+      Ok(None) => return Ok(None),
+      Err(err) => return Err(err),
+    };
 
     Ok(Some(EspHomeMessage::new_response(
       msg_type as u32,
@@ -67,14 +77,8 @@ impl Encoder<EspHomeMessage> for Plain {
   fn encode(&mut self, item: EspHomeMessage, dst: &mut bytes::BytesMut) -> Result<(), Self::Error> {
     let message = item.get_protobuf_message();
     dst.put_u8(0);
-    dst
-      .writer()
-      .write_varint(message.protobuf_data.len() as u64)
-      .unwrap();
-    dst
-      .writer()
-      .write_varint(message.protobuf_type as u64)
-      .unwrap();
+    dst.put_usize_varint(message.protobuf_data.len());
+    dst.put_u32_varint(message.protobuf_type);
     dst.extend_from_slice(&message.protobuf_data);
     Ok(())
   }

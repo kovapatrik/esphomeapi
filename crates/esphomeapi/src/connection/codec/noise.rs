@@ -10,6 +10,7 @@ use super::{EspHomeMessage, FrameCodec};
 
 static PROLOGUE: &'static [u8] = b"NoiseAPIInit\x00\x00";
 static HELLO: &'static [u8] = &[0x01, 0x00, 0x00];
+const MAX_FRAME_SIZE: usize = 65535;
 
 #[derive(PartialEq, Debug, Clone)]
 enum NoiseState {
@@ -65,12 +66,24 @@ impl FrameCodec for Noise {
     Some(frame.freeze())
   }
 
-  fn parse_frame(&self, src: &mut bytes::BytesMut) -> Result<(u8, u8), Error> {
-    let header = &src[..3];
+  fn parse_frame(
+    &self,
+    src: &mut bytes::BytesMut,
+  ) -> Result<Option<(BytesMut, usize)>, std::io::Error> {
+    if src.is_empty() {
+      return Ok(None);
+    }
+
+    if src.len() < 3 {
+      return Ok(None);
+    }
+
+    let mut header = [0u8; 3];
+    header.copy_from_slice(&src[..3]);
 
     let preamble = header[0];
     if preamble != 0x01 {
-      return Err(Error::new(
+      return Err(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
         "Invalid preamble",
       ));
@@ -79,15 +92,23 @@ impl FrameCodec for Noise {
     let msg_size_high = header[1];
     let msg_size_low = header[2];
 
-    src.advance(3);
-    if src.len() < (msg_size_high as usize).checked_shl(8).unwrap_or(0) | msg_size_low as usize {
-      return Err(Error::new(
+    let length = u16::from_be_bytes([msg_size_high, msg_size_low]) as usize;
+
+    if length > MAX_FRAME_SIZE {
+      return Err(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
-        "Invalid message size",
+        "Frame size exceeds maximum",
       ));
     }
 
-    Ok((msg_size_high, msg_size_low))
+    if src.len() < 3 + length {
+      src.reserve(3 + length - src.len());
+      return Ok(None);
+    }
+
+    let frame = src.split_to(3 + length);
+
+    Ok(Some((frame, 0)))
   }
 
   fn close(&mut self) {
@@ -100,14 +121,11 @@ impl Decoder for Noise {
   type Error = std::io::Error;
 
   fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-    if src.is_empty() {
-      return Ok(None);
-    }
-
-    let (msg_len_high, msg_len_low) = self.parse_frame(src)?;
-    let msg_len = (msg_len_high as usize).checked_shl(8).unwrap_or(0) | msg_len_low as usize;
-
-    let mut msg = src.split_to(msg_len);
+    let (mut msg, _) = match self.parse_frame(src) {
+      Ok(Some((msg, _))) => (msg, 0),
+      Ok(None) => return Ok(None),
+      Err(err) => return Err(err),
+    };
 
     match self.state {
       NoiseState::Hello => {
