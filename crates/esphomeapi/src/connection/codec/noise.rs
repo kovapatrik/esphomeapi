@@ -10,6 +10,7 @@ use super::{EspHomeMessage, FrameCodec};
 
 static PROLOGUE: &'static [u8] = b"NoiseAPIInit\x00\x00";
 static HELLO: &'static [u8] = &[0x01, 0x00, 0x00];
+const HEADER_SIZE: usize = 3;
 const MAX_FRAME_SIZE: usize = 65535;
 
 #[derive(PartialEq, Debug, Clone)]
@@ -74,12 +75,11 @@ impl FrameCodec for Noise {
       return Ok(None);
     }
 
-    if src.len() < 3 {
+    if src.len() < HEADER_SIZE {
       return Ok(None);
     }
 
-    let mut header = [0u8; 3];
-    header.copy_from_slice(&src[..3]);
+    let header = &src[..HEADER_SIZE];
 
     let preamble = header[0];
     if preamble != 0x01 {
@@ -101,12 +101,13 @@ impl FrameCodec for Noise {
       ));
     }
 
-    if src.len() < 3 + length {
-      src.reserve(3 + length - src.len());
+    if src.len() < HEADER_SIZE + length {
+      src.reserve(HEADER_SIZE + length - src.len());
       return Ok(None);
     }
 
-    let frame = src.split_to(3 + length);
+    src.advance(HEADER_SIZE);
+    let frame = src.split_to(length);
 
     Ok(Some((frame, 0)))
   }
