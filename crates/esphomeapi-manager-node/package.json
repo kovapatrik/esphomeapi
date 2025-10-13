@@ -3,7 +3,7 @@
   "repository": {
     "url": "https://github.com/kovapatrik/esphomeapi"
   },
-  "version": "0.1.4-beta.2",
+  "version": "0.1.4-beta.3",
   "main": "index.js",
   "types": "index.d.ts",
   "files": [

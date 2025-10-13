@@ -3,7 +3,7 @@ mod switch;
 
 use std::fmt;
 
-pub use light::Light;
+pub use light::{ColorMode, Light};
 pub use switch::Switch;
 
 type StateResult<T> = std::result::Result<T, StateError>;

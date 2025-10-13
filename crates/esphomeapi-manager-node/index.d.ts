@@ -7,6 +7,16 @@ export declare class Light {
   turnOn(): Promise<void>
   turnOff(): Promise<void>
   toggle(): Promise<void>
+  get brightness(): number
+  get colorMode(): ColorMode
+  get colorBrightness(): number
+  get rgb(): [number, number, number]
+  get white(): number
+  get colorTemperature(): number
+  get coldWhite(): number
+  get warmWhite(): number
+  get effect(): string
+  sendCommand(options: LightCommandOptions): Promise<void>
 }
 
 export declare class Manager {
@@ -26,6 +36,19 @@ export declare class Switch {
   turnOff(): Promise<void>
   toggle(): Promise<void>
   setState(state: boolean): Promise<void>
+}
+
+export declare const enum ColorMode {
+  Unknown = 0,
+  OnOff = 1,
+  Brightness = 2,
+  White = 7,
+  ColorTemperature = 11,
+  ColdWarmWhite = 19,
+  RGB = 35,
+  RGBWhite = 39,
+  RGBColorTemperature = 47,
+  RGBColdWarmWhite = 51
 }
 
 export interface ConnectionOptions {
@@ -54,6 +77,21 @@ export interface EntityInfo {
   disabledByDefault: boolean
   entityCategory: string
   icon: string
+}
+
+export interface LightCommandOptions {
+  state?: boolean
+  brightness?: number
+  colorMode?: ColorMode
+  colorBrightness?: number
+  rgb?: [number, number, number]
+  white?: number
+  colorTemperature?: number
+  coldWhite?: number
+  warmWhite?: number
+  transitionLength?: number
+  flashLength?: number
+  effect?: string
 }
 
 export interface ServiceInfo {
