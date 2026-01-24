@@ -1,6 +1,8 @@
 use esphomeapi_manager::ServiceInfo as RustServiceInfo;
 use napi_derive::napi;
 
+use crate::Result;
+
 #[napi(object)]
 pub struct ServiceInfo {
   pub ty_domain: String,
@@ -33,10 +35,12 @@ impl From<RustServiceInfo> for ServiceInfo {
 }
 
 #[napi]
-pub async fn discover(seconds: u32) -> Vec<ServiceInfo> {
-  let result = esphomeapi_manager::discover(seconds).await;
-  result
-    .iter()
-    .map(|service_info| service_info.clone().into())
-    .collect()
+pub async fn discover(seconds: u32) -> Result<Vec<ServiceInfo>> {
+  let result = esphomeapi_manager::discover(seconds).await?;
+  Ok(
+    result
+      .iter()
+      .map(|service_info| service_info.clone().into())
+      .collect(),
+  )
 }
