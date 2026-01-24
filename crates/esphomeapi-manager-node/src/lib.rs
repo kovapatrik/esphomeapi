@@ -7,7 +7,6 @@ mod model;
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
-
 pub enum Error {
   #[error("esphomeapi error: {0}")]
   EsphomeapiError(#[from] esphomeapi_manager::Error),

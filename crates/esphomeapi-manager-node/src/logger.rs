@@ -23,7 +23,7 @@ pub struct NodeTracingLayer;
 
 impl<S> Layer<S> for NodeTracingLayer
 where
-  S: Subscriber + for<'a> LookupSpan<'a>,
+  S: Subscriber,
 {
   fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
     let Some(console) = CONSOLE.get() else {
