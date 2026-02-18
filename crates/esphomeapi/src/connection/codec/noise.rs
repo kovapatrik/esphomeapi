@@ -1,261 +1,327 @@
-use std::io::Error;
-
 use base64::prelude::*;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use noise_protocol::{patterns::noise_nn_psk0, CipherState, HandshakeState};
 use noise_rust_crypto::{ChaCha20Poly1305, Sha256, X25519};
 use tokio_util::codec::{Decoder, Encoder};
 
-use super::{EspHomeMessage, FrameCodec};
+use super::{CodecError, EspHomeDecoder, EspHomeEncoder, HandshakeResult, ProtobufMessage};
 
-static PROLOGUE: &'static [u8] = b"NoiseAPIInit\x00\x00";
-static HELLO: &'static [u8] = &[0x01, 0x00, 0x00];
+/// Prologue for the Noise protocol handshake
+const NOISE_PROLOGUE: &[u8] = b"NoiseAPIInit\x00\x00";
+
+/// Hello frame sent to initiate the connection
+const NOISE_HELLO: &[u8] = &[0x01, 0x00, 0x00];
+
+/// Preamble byte for noise-encrypted frames
+const NOISE_PREAMBLE: u8 = 0x01;
+
+/// Header size for noise frames (preamble + 2 bytes length)
 const HEADER_SIZE: usize = 3;
+
+/// Maximum allowed frame size
 const MAX_FRAME_SIZE: usize = 65535;
 
-#[derive(PartialEq, Debug, Clone)]
-enum NoiseState {
-  Hello,
-  Handshake,
-  Ready,
-  Closed,
+/// Overhead added by encryption (Poly1305 tag)
+const ENCRYPTION_OVERHEAD: usize = 16;
+
+/// Size of the message header inside encrypted payload (type + length, both u16)
+const MESSAGE_HEADER_SIZE: usize = 4;
+
+/// Parse a frame from the buffer, returning the frame data if complete
+fn parse_frame(src: &mut BytesMut) -> Result<Option<BytesMut>, CodecError> {
+  if src.len() < HEADER_SIZE {
+    return Ok(None);
+  }
+
+  let preamble = src[0];
+  if preamble != NOISE_PREAMBLE {
+    return Err(CodecError::InvalidPreamble {
+      expected: NOISE_PREAMBLE,
+      actual: preamble,
+    });
+  }
+
+  let length = u16::from_be_bytes([src[1], src[2]]) as usize;
+
+  if length > MAX_FRAME_SIZE {
+    return Err(CodecError::FrameTooLarge {
+      size: length,
+      max: MAX_FRAME_SIZE,
+    });
+  }
+
+  if src.len() < HEADER_SIZE + length {
+    src.reserve(HEADER_SIZE + length - src.len());
+    return Ok(None);
+  }
+
+  // Consume header
+  src.advance(HEADER_SIZE);
+
+  // Extract frame data
+  Ok(Some(src.split_to(length)))
 }
 
-#[derive(Clone)]
-pub struct Noise {
-  state: NoiseState,
+/// Internal state during handshake
+enum HandshakePhase {
+  /// Initial state - ready to send Hello frame
+  Initial,
+  /// Waiting for server hello response
+  AwaitingServerHello,
+  /// Waiting for handshake response after sending noise message
+  AwaitingHandshakeResponse,
+}
+
+/// Noise handshake handler
+///
+/// This type manages the Noise protocol handshake. Once the handshake completes,
+/// it produces separate encoder and decoder.
+pub struct NoiseHandshake {
+  phase: HandshakePhase,
+  initiator: HandshakeState<X25519, ChaCha20Poly1305, Sha256>,
   expected_server_name: Option<String>,
-  initiator: Option<HandshakeState<X25519, ChaCha20Poly1305, Sha256>>,
-  decoder: Option<CipherState<ChaCha20Poly1305>>,
-  encoder: Option<CipherState<ChaCha20Poly1305>>,
 }
 
-impl Noise {
-  pub fn new(psk: String, expected_server_name: Option<String>) -> Self {
-    let base64_psk = BASE64_STANDARD.decode(psk.as_bytes()).unwrap();
-    let mut initiator =
-      HandshakeState::new(noise_nn_psk0(), true, PROLOGUE, None, None, None, None);
-    initiator.push_psk(base64_psk.as_slice());
+impl NoiseHandshake {
+  /// Create a new Noise handshake handler
+  ///
+  /// # Arguments
+  /// * `psk` - Base64-encoded pre-shared key
+  /// * `expected_server_name` - Optional server name to verify
+  pub fn new(psk: &str, expected_server_name: Option<String>) -> Result<Self, CodecError> {
+    let psk_bytes = BASE64_STANDARD.decode(psk.as_bytes())?;
 
-    Noise {
-      state: NoiseState::Hello,
+    let mut initiator = HandshakeState::new(
+      noise_nn_psk0(),
+      true,
+      NOISE_PROLOGUE,
+      None,
+      None,
+      None,
+      None,
+    );
+    initiator.push_psk(&psk_bytes);
+
+    Ok(Self {
+      phase: HandshakePhase::Initial,
+      initiator,
       expected_server_name,
-      initiator: Some(initiator),
-      decoder: None,
-      encoder: None,
+    })
+  }
+
+  /// Process handshake step
+  ///
+  /// Returns:
+  /// - `HandshakeResult::NeedMoreData` if more data is needed from the server
+  /// - `HandshakeResult::SendFrame` if a frame needs to be sent
+  /// - `HandshakeResult::Complete` when handshake is done
+  pub fn process(&mut self, src: &mut BytesMut) -> Result<HandshakeResult, CodecError> {
+    match self.phase {
+      HandshakePhase::Initial => {
+        // Transition to awaiting server hello
+        self.phase = HandshakePhase::AwaitingServerHello;
+        Ok(HandshakeResult::SendFrame(Bytes::from_static(NOISE_HELLO)))
+      }
+      HandshakePhase::AwaitingServerHello => {
+        let data = match parse_frame(src)? {
+          Some(data) => data,
+          None => return Ok(HandshakeResult::NeedMoreData),
+        };
+        self.handle_server_hello(data)
+      }
+      HandshakePhase::AwaitingHandshakeResponse => {
+        let data = match parse_frame(src)? {
+          Some(data) => data,
+          None => return Ok(HandshakeResult::NeedMoreData),
+        };
+        self.handle_handshake_response(data)
+      }
     }
   }
-}
 
-impl FrameCodec for Noise {
-  fn get_handshake_frame(&mut self) -> Option<Bytes> {
-    let buffer = self
+  /// Handle the Server Hello response
+  ///
+  /// After validating, generates the Noise handshake frame to send.
+  fn handle_server_hello(&mut self, data: BytesMut) -> Result<HandshakeResult, CodecError> {
+    // Validate protocol version
+    let chosen_proto = data.first().copied().unwrap_or(0);
+    if chosen_proto != NOISE_PREAMBLE {
+      return Err(CodecError::InvalidProtocol {
+        expected: NOISE_PREAMBLE,
+        actual: chosen_proto,
+      });
+    }
+
+    // Check for server name (added in ESPHome 2022.2)
+    if let Some(null_pos) = data.iter().skip(1).position(|&x| x == 0x00) {
+      let server_name = String::from_utf8(data[1..1 + null_pos].to_vec())?;
+
+      if let Some(expected) = &self.expected_server_name {
+        if server_name != *expected {
+          return Err(CodecError::ServerNameMismatch {
+            expected: expected.clone(),
+            actual: server_name,
+          });
+        }
+      }
+    }
+
+    // Generate the Noise handshake message
+    let handshake_payload = self
       .initiator
-      .as_mut()
-      .unwrap()
       .write_message_vec(&[])
-      .unwrap();
-    let len = buffer.len() + 1;
-    let header = [0x01, (len.checked_shr(8).unwrap_or(0)) as u8, len as u8].to_vec();
+      .map_err(|e| CodecError::HandshakeFailed(format!("Failed to write handshake: {:?}", e)))?;
 
-    let mut frame = BytesMut::with_capacity(1024);
-    frame.extend_from_slice(HELLO);
-    frame.extend_from_slice(&header);
-    frame.put_u8(0);
-    frame.extend_from_slice(&buffer);
+    let payload_len = handshake_payload.len() + 1; // +1 for the 0x00 byte
 
-    Some(frame.freeze())
+    let mut frame = BytesMut::with_capacity(HEADER_SIZE + payload_len);
+
+    // Handshake frame header
+    frame.put_u8(NOISE_PREAMBLE);
+    frame.put_u16(payload_len as u16);
+
+    // Handshake payload (0x00 prefix + noise message)
+    frame.put_u8(0x00);
+    frame.extend_from_slice(&handshake_payload);
+
+    // Transition to awaiting handshake response
+    self.phase = HandshakePhase::AwaitingHandshakeResponse;
+
+    Ok(HandshakeResult::SendFrame(frame.freeze()))
   }
 
-  fn parse_frame(
-    &self,
-    src: &mut bytes::BytesMut,
-  ) -> Result<Option<(BytesMut, usize)>, std::io::Error> {
-    if src.is_empty() {
-      return Ok(None);
+  /// Handle the handshake response and complete the handshake
+  fn handle_handshake_response(&mut self, mut data: BytesMut) -> Result<HandshakeResult, CodecError> {
+    // Check for error response (error flag = 0x01)
+    let first_byte = data.first().copied().unwrap_or(0);
+    if first_byte == 0x01 {
+      // Error response: [0x01] [error message...]
+      data.advance(1);
+      let error_msg = String::from_utf8_lossy(&data).to_string();
+      return Err(CodecError::HandshakeFailed(error_msg));
     }
 
-    if src.len() < HEADER_SIZE {
-      return Ok(None);
+    // Success response starts with 0x00
+    if first_byte != 0x00 {
+      return Err(CodecError::HandshakeFailed(format!(
+        "Invalid handshake response prefix: {:#04x}",
+        first_byte
+      )));
     }
+    data.advance(1);
 
-    let header = &src[..HEADER_SIZE];
+    // Process the Noise handshake response
+    self
+      .initiator
+      .read_message_vec(&data)
+      .map_err(|e| CodecError::HandshakeFailed(format!("Noise error: {:?}", e)))?;
 
-    let preamble = header[0];
-    if preamble != 0x01 {
-      return Err(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        "Invalid preamble",
+    if !self.initiator.completed() {
+      return Err(CodecError::HandshakeFailed(
+        "Handshake did not complete as expected".to_string(),
       ));
     }
 
-    let msg_size_high = header[1];
-    let msg_size_low = header[2];
+    let (encoder_cipher, decoder_cipher) = self.initiator.get_ciphers();
 
-    let length = u16::from_be_bytes([msg_size_high, msg_size_low]) as usize;
-
-    if length > MAX_FRAME_SIZE {
-      return Err(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        "Frame size exceeds maximum",
-      ));
-    }
-
-    if src.len() < HEADER_SIZE + length {
-      src.reserve(HEADER_SIZE + length - src.len());
-      return Ok(None);
-    }
-
-    src.advance(HEADER_SIZE);
-    let frame = src.split_to(length);
-
-    Ok(Some((frame, 0)))
-  }
-
-  fn close(&mut self) {
-    self.state = NoiseState::Closed;
+    Ok(HandshakeResult::Complete(
+      EspHomeDecoder::Noise(NoiseDecoder::new(decoder_cipher)),
+      EspHomeEncoder::Noise(NoiseEncoder::new(encoder_cipher)),
+    ))
   }
 }
 
-impl Decoder for Noise {
-  type Item = EspHomeMessage;
+/// Decoder for noise-encrypted messages
+///
+/// Created after handshake completes. Decrypts incoming messages.
+pub struct NoiseDecoder {
+  cipher: CipherState<ChaCha20Poly1305>,
+}
+
+impl NoiseDecoder {
+  fn new(cipher: CipherState<ChaCha20Poly1305>) -> Self {
+    Self { cipher }
+  }
+}
+
+impl Decoder for NoiseDecoder {
+  type Item = ProtobufMessage;
   type Error = std::io::Error;
 
-  fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-    let (mut msg, _) = match self.parse_frame(src) {
-      Ok(Some((msg, _))) => (msg, 0),
-      Ok(None) => return Ok(None),
-      Err(err) => return Err(err),
+  fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+    let data = match parse_frame(src).map_err(std::io::Error::from)? {
+      Some(data) => data,
+      None => return Ok(None),
     };
 
-    match self.state {
-      NoiseState::Hello => {
-        let chosen_proto = msg[0];
-        if chosen_proto != 0x01 {
-          return Err(Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Invalid protocol",
-          ));
+    // Decrypt the frame
+    let buffer = self
+      .cipher
+      .decrypt_vec(&data)
+      .map_err(|_| CodecError::DecryptionFailed)?;
+
+    if buffer.len() < MESSAGE_HEADER_SIZE {
+      return Err(
+        CodecError::MessageTooShort {
+          expected: MESSAGE_HEADER_SIZE,
+          actual: buffer.len(),
         }
-
-        let server_name_i = msg.iter().skip(1).position(|&x| x == 0x00);
-
-        match server_name_i {
-          Some(server_name_i) => {
-            // server name found, this extension was added in 2022.2
-            let server_name = msg
-              .iter()
-              .skip(1)
-              .take(server_name_i)
-              .copied()
-              .collect::<Vec<u8>>();
-            let server_name = String::from_utf8(server_name).unwrap();
-
-            if let Some(expected_server_name) = &self.expected_server_name {
-              if server_name != *expected_server_name {
-                return Err(Error::new(
-                  std::io::ErrorKind::InvalidData,
-                  "Invalid server name",
-                ));
-              }
-            }
-          }
-          None => (), // server name not found
-        }
-        self.state = NoiseState::Handshake;
-      }
-      NoiseState::Handshake => {
-        if msg[0] != 0x00 {
-          return Err(Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Invalid preamble",
-          ));
-        }
-        msg.advance(1);
-
-        let mut handshake_state = self.initiator.take().unwrap();
-        handshake_state.read_message_vec(&msg).unwrap();
-
-        if handshake_state.completed() {
-          let (encoder, decoder) = handshake_state.get_ciphers();
-          self.encoder = Some(encoder);
-          self.decoder = Some(decoder);
-          self.state = NoiseState::Ready;
-          return Ok(Some(EspHomeMessage::new_response(
-            0,
-            "Handshake completed".as_bytes().to_vec(),
-          )));
-        } else {
-          self.initiator = Some(handshake_state);
-        }
-      }
-      NoiseState::Ready => {
-        if self.decoder.is_none() {
-          return Err(Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Decoder not initialized",
-          ));
-        }
-        let buffer = self.decoder.as_mut().unwrap().decrypt_vec(&msg).unwrap();
-
-        // Message layout is
-        // 2 bytes: message type
-        // 2 bytes: message length
-        // N bytes: message data
-        let msg_type_high = buffer[0] as u32;
-        let msg_type_low = buffer[1] as u32;
-
-        return Ok(Some(EspHomeMessage::new_response(
-          msg_type_high.checked_shr(8).unwrap_or(0) | msg_type_low,
-          buffer[4..].to_vec(),
-        )));
-      }
-      NoiseState::Closed => {
-        return Err(Error::new(
-          std::io::ErrorKind::InvalidData,
-          "Connection closed",
-        ))
-      }
+        .into(),
+      );
     }
 
-    Ok(None)
+    // Message layout:
+    // - 2 bytes: message type (big-endian)
+    // - 2 bytes: message length (big-endian)
+    // - N bytes: message data
+    let msg_type = u16::from_be_bytes([buffer[0], buffer[1]]) as u32;
+
+    Ok(Some(ProtobufMessage {
+      protobuf_type: msg_type,
+      protobuf_data: buffer[MESSAGE_HEADER_SIZE..].to_vec(),
+    }))
   }
 }
 
-impl Encoder<EspHomeMessage> for Noise {
+/// Encoder for noise-encrypted messages
+///
+/// Created after handshake completes. Encrypts outgoing messages.
+pub struct NoiseEncoder {
+  cipher: CipherState<ChaCha20Poly1305>,
+}
+
+impl NoiseEncoder {
+  fn new(cipher: CipherState<ChaCha20Poly1305>) -> Self {
+    Self { cipher }
+  }
+}
+
+impl Encoder<ProtobufMessage> for NoiseEncoder {
   type Error = std::io::Error;
 
-  fn encode(&mut self, item: EspHomeMessage, dst: &mut bytes::BytesMut) -> Result<(), Self::Error> {
-    if self.state != NoiseState::Ready || self.encoder.is_none() {
-      return Err(Error::new(
-        std::io::ErrorKind::InvalidData,
-        "Encoder not initialized",
-      ));
-    }
+  fn encode(&mut self, item: ProtobufMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    // Build the plaintext message
+    let mut plaintext = BytesMut::with_capacity(MESSAGE_HEADER_SIZE + item.protobuf_data.len());
 
-    let mut buffer = BytesMut::new();
+    // Message type (big-endian u16)
+    plaintext.put_u16(item.protobuf_type as u16);
 
-    let message = item.get_protobuf_message();
+    // Message length (big-endian u16)
+    plaintext.put_u16(item.protobuf_data.len() as u16);
 
-    let data_len = message.protobuf_data.len() as u8;
-    let data_header = [
-      (message.protobuf_type.checked_shr(8).unwrap_or(0)) as u8,
-      message.protobuf_type as u8,
-      (data_len.checked_shr(8).unwrap_or(0)) as u8,
-      data_len as u8,
-    ]
-    .to_vec();
-    buffer.extend_from_slice(&data_header);
-    buffer.extend_from_slice(&message.protobuf_data);
+    // Message data
+    plaintext.extend_from_slice(&item.protobuf_data);
 
-    let mut frame = BytesMut::zeroed(data_header.len() + message.protobuf_data.len() + 16);
+    // Encrypt
+    let mut ciphertext = BytesMut::zeroed(plaintext.len() + ENCRYPTION_OVERHEAD);
+    self.cipher.encrypt(&plaintext, &mut ciphertext);
 
-    self.encoder.as_mut().unwrap().encrypt(&buffer, &mut frame);
-    let len = frame.len();
-    let header = [0x01, (len.checked_shr(8).unwrap_or(0)) as u8, len as u8].to_vec();
+    // Write frame header
+    dst.put_u8(NOISE_PREAMBLE);
+    dst.put_u16(ciphertext.len() as u16);
 
-    dst.extend_from_slice(&header);
-    dst.extend_from_slice(&frame);
+    // Write encrypted data
+    dst.extend_from_slice(&ciphertext);
 
     Ok(())
   }

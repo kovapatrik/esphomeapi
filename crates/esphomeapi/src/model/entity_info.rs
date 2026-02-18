@@ -66,7 +66,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -89,7 +88,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -109,7 +107,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -128,7 +125,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -144,7 +140,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -196,7 +191,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -219,7 +213,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -235,7 +228,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -251,7 +243,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -271,7 +262,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -294,7 +284,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -324,7 +313,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -346,7 +334,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -370,7 +357,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -394,7 +380,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -413,7 +398,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -437,7 +421,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -457,7 +440,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -479,7 +461,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -498,7 +479,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -514,7 +494,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 
@@ -533,7 +512,6 @@ impl EntityInfo {
       object_id: data.object_id,
       key: data.key,
       name: data.name,
-      unique_id: data.unique_id,
       icon: data.icon,
     };
 

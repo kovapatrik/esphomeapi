@@ -180,7 +180,6 @@ pub struct BaseEntityInfo {
   pub object_id: String,
   pub key: u32,
   pub name: String,
-  pub unique_id: String,
   pub disabled_by_default: bool,
   pub icon: String,
   pub entity_category: EntityCategory,
@@ -370,7 +369,8 @@ pub enum ColorMode {
   #[default]
   Unknown = 0,
   OnOff = 1,
-  Brightness = 2,
+  LegacyBrightness = 2,
+  Brightness = 3,
   White = 7,
   ColorTemperature = 11,
   ColdWarmWhite = 19,
@@ -385,6 +385,7 @@ impl From<proto::api::ColorMode> for ColorMode {
     match value {
       proto::api::ColorMode::COLOR_MODE_UNKNOWN => ColorMode::Unknown,
       proto::api::ColorMode::COLOR_MODE_ON_OFF => ColorMode::OnOff,
+      proto::api::ColorMode::COLOR_MODE_LEGACY_BRIGHTNESS => ColorMode::LegacyBrightness,
       proto::api::ColorMode::COLOR_MODE_BRIGHTNESS => ColorMode::Brightness,
       proto::api::ColorMode::COLOR_MODE_WHITE => ColorMode::White,
       proto::api::ColorMode::COLOR_MODE_COLOR_TEMPERATURE => ColorMode::ColorTemperature,
@@ -402,6 +403,7 @@ impl Into<proto::api::ColorMode> for ColorMode {
     match self {
       ColorMode::Unknown => proto::api::ColorMode::COLOR_MODE_UNKNOWN,
       ColorMode::OnOff => proto::api::ColorMode::COLOR_MODE_ON_OFF,
+      ColorMode::LegacyBrightness => proto::api::ColorMode::COLOR_MODE_LEGACY_BRIGHTNESS,
       ColorMode::Brightness => proto::api::ColorMode::COLOR_MODE_BRIGHTNESS,
       ColorMode::White => proto::api::ColorMode::COLOR_MODE_WHITE,
       ColorMode::ColorTemperature => proto::api::ColorMode::COLOR_MODE_COLOR_TEMPERATURE,
@@ -513,6 +515,7 @@ pub enum SensorStateClass {
   Measurement,
   TotalIncreasing,
   Total,
+  MeasurementAngle,
 }
 
 impl From<proto::api::SensorStateClass> for SensorStateClass {
@@ -524,6 +527,9 @@ impl From<proto::api::SensorStateClass> for SensorStateClass {
         SensorStateClass::TotalIncreasing
       }
       proto::api::SensorStateClass::STATE_CLASS_TOTAL => SensorStateClass::Total,
+      proto::api::SensorStateClass::STATE_CLASS_MEASUREMENT_ANGLE => {
+        SensorStateClass::MeasurementAngle
+      }
     }
   }
 }
@@ -1018,6 +1024,9 @@ pub enum MediaPlayerState {
   Idle,
   Playing,
   Paused,
+  Announcing,
+  Off,
+  On,
 }
 
 impl From<proto::api::MediaPlayerState> for MediaPlayerState {
@@ -1027,6 +1036,9 @@ impl From<proto::api::MediaPlayerState> for MediaPlayerState {
       proto::api::MediaPlayerState::MEDIA_PLAYER_STATE_IDLE => MediaPlayerState::Idle,
       proto::api::MediaPlayerState::MEDIA_PLAYER_STATE_PLAYING => MediaPlayerState::Playing,
       proto::api::MediaPlayerState::MEDIA_PLAYER_STATE_PAUSED => MediaPlayerState::Paused,
+      proto::api::MediaPlayerState::MEDIA_PLAYER_STATE_ANNOUNCING => MediaPlayerState::Announcing,
+      proto::api::MediaPlayerState::MEDIA_PLAYER_STATE_OFF => MediaPlayerState::Off,
+      proto::api::MediaPlayerState::MEDIA_PLAYER_STATE_ON => MediaPlayerState::On,
     }
   }
 }
@@ -1038,6 +1050,15 @@ pub enum MediaPlayerCommand {
   Stop,
   Mute,
   Unmute,
+  Toggle,
+  VolumeUp,
+  VolumeDown,
+  Enqueue,
+  RepeatOne,
+  RepeatOff,
+  ClearPlaylist,
+  TurnOn,
+  TurnOff,
 }
 
 impl From<proto::api::MediaPlayerCommand> for MediaPlayerCommand {
@@ -1048,6 +1069,25 @@ impl From<proto::api::MediaPlayerCommand> for MediaPlayerCommand {
       proto::api::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_STOP => MediaPlayerCommand::Stop,
       proto::api::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_MUTE => MediaPlayerCommand::Mute,
       proto::api::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_UNMUTE => MediaPlayerCommand::Unmute,
+      proto::api::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_TOGGLE => MediaPlayerCommand::Toggle,
+      proto::api::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_VOLUME_UP => {
+        MediaPlayerCommand::VolumeUp
+      }
+      proto::api::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_VOLUME_DOWN => {
+        MediaPlayerCommand::VolumeDown
+      }
+      proto::api::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_ENQUEUE => MediaPlayerCommand::Enqueue,
+      proto::api::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_ONE => {
+        MediaPlayerCommand::RepeatOne
+      }
+      proto::api::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_OFF => {
+        MediaPlayerCommand::RepeatOff
+      }
+      proto::api::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_CLEAR_PLAYLIST => {
+        MediaPlayerCommand::ClearPlaylist
+      }
+      proto::api::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_TURN_ON => MediaPlayerCommand::TurnOn,
+      proto::api::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_TURN_OFF => MediaPlayerCommand::TurnOff,
     }
   }
 }
@@ -1269,12 +1309,46 @@ pub struct UpdateState {
 
 // ==================== USER-DEFINED SERVICES ====================
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HomeassistantServiceCall {
+pub struct HomeassistantActionRequest {
   pub service: String,
   pub is_event: bool,
   pub data: HashMap<String, String>,
   pub data_template: HashMap<String, String>,
   pub variables: HashMap<String, String>,
+  pub call_id: u32,
+  pub wants_response: bool,
+  pub response_template: String,
+}
+
+impl From<proto::api::HomeassistantActionRequest> for HomeassistantActionRequest {
+  fn from(value: proto::api::HomeassistantActionRequest) -> Self {
+    let data = value
+      .data
+      .into_iter()
+      .map(|item| (item.key, item.value))
+      .collect();
+    let data_template = value
+      .data_template
+      .into_iter()
+      .map(|item| (item.key, item.value))
+      .collect();
+    let variables = value
+      .variables
+      .into_iter()
+      .map(|item| (item.key, item.value))
+      .collect();
+
+    Self {
+      service: value.service,
+      is_event: value.is_event,
+      data,
+      data_template,
+      variables,
+      call_id: value.call_id,
+      wants_response: value.wants_response,
+      response_template: value.response_template,
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1399,7 +1473,7 @@ impl BluetoothLEAdvertisement {
       address: data.address,
       rssi: data.rssi,
       address_type: data.address_type,
-      name: data.name, // TODO: check if correct, UTF-8 conversion might be needed
+      name: String::from_utf8_lossy(&data.name).into(),
       service_uuids,
       service_data,
       manufacturer_data,
@@ -1565,6 +1639,100 @@ pub enum LogLevel {
   Debug,
   Verbose,
   VeryVerbose,
+}
+
+impl From<proto::api::LogLevel> for LogLevel {
+  fn from(value: proto::api::LogLevel) -> Self {
+    match value {
+      proto::api::LogLevel::LOG_LEVEL_NONE => LogLevel::None,
+      proto::api::LogLevel::LOG_LEVEL_ERROR => LogLevel::Error,
+      proto::api::LogLevel::LOG_LEVEL_WARN => LogLevel::Warn,
+      proto::api::LogLevel::LOG_LEVEL_INFO => LogLevel::Info,
+      proto::api::LogLevel::LOG_LEVEL_CONFIG => LogLevel::Config,
+      proto::api::LogLevel::LOG_LEVEL_DEBUG => LogLevel::Debug,
+      proto::api::LogLevel::LOG_LEVEL_VERBOSE => LogLevel::Verbose,
+      proto::api::LogLevel::LOG_LEVEL_VERY_VERBOSE => LogLevel::VeryVerbose,
+    }
+  }
+}
+
+// ==================== LOG EVENT ====================
+
+/// Event received when subscribed to device logs
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogEvent {
+  pub level: LogLevel,
+  pub message: Vec<u8>,
+}
+
+impl From<proto::api::SubscribeLogsResponse> for LogEvent {
+  fn from(value: proto::api::SubscribeLogsResponse) -> Self {
+    LogEvent {
+      level: value.level.enum_value_or_default().into(),
+      message: value.message,
+    }
+  }
+}
+
+// ==================== CAMERA ====================
+
+/// A camera image frame received from the device
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraImage {
+  pub key: u32,
+  pub data: Vec<u8>,
+  /// Whether this is the last frame in the current image
+  pub done: bool,
+}
+
+impl From<proto::api::CameraImageResponse> for CameraImage {
+  fn from(value: proto::api::CameraImageResponse) -> Self {
+    CameraImage {
+      key: value.key,
+      data: value.data,
+      done: value.done,
+    }
+  }
+}
+
+// ==================== HOME ASSISTANT EVENTS ====================
+
+/// Event received when subscribed to Home Assistant states.
+/// The ESPHome device sends these to tell the client which HA entities it wants to monitor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HomeAssistantEvent {
+  /// Device wants to subscribe to ongoing state changes for this entity
+  StateSubscription {
+    entity_id: String,
+    attribute: Option<String>,
+  },
+  /// Device wants the current state once (one-time request)
+  StateRequest {
+    entity_id: String,
+    attribute: Option<String>,
+  },
+}
+
+impl From<proto::api::SubscribeHomeAssistantStateResponse> for HomeAssistantEvent {
+  fn from(value: proto::api::SubscribeHomeAssistantStateResponse) -> Self {
+    let attribute = if value.attribute.is_empty() {
+      None
+    } else {
+      Some(value.attribute)
+    };
+
+    if value.once {
+      HomeAssistantEvent::StateRequest {
+        entity_id: value.entity_id,
+        attribute,
+      }
+    } else {
+      HomeAssistantEvent::StateSubscription {
+        entity_id: value.entity_id,
+        attribute,
+      }
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

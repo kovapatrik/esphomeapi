@@ -1,224 +1,145 @@
 mod noise;
 mod plain;
 
-use std::sync::{Arc, RwLock};
-
 use bytes::{Bytes, BytesMut};
-pub use noise::Noise;
-pub use plain::Plain;
-use tokio::sync::{mpsc, oneshot};
+pub use noise::{NoiseDecoder, NoiseEncoder, NoiseHandshake};
+pub use plain::{PlainDecoder, PlainEncoder};
+use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::{Connection, Result as EspResult};
+/// Errors that can occur during codec operations
+#[derive(Debug, Error)]
+pub enum CodecError {
+  #[error("Invalid preamble: expected {expected:#04x}, got {actual:#04x}")]
+  InvalidPreamble { expected: u8, actual: u8 },
 
-pub type Callback =
-  Box<dyn Fn(Arc<RwLock<Connection>>, ProtobufMessage) -> EspResult<()> + Send + Sync + 'static>;
+  #[error("Invalid protocol version: expected {expected:#04x}, got {actual:#04x}")]
+  InvalidProtocol { expected: u8, actual: u8 },
 
+  #[error("Frame size {size} exceeds maximum {max}")]
+  FrameTooLarge { size: usize, max: usize },
+
+  #[error("Server name mismatch: expected '{expected}', got '{actual}'")]
+  ServerNameMismatch { expected: String, actual: String },
+
+  #[error("Invalid server name encoding: {0}")]
+  InvalidServerName(#[from] std::string::FromUtf8Error),
+
+  #[error("Invalid base64 PSK: {0}")]
+  InvalidPsk(#[from] base64::DecodeError),
+
+  #[error("Handshake failed: {0}")]
+  HandshakeFailed(String),
+
+  #[error("Decryption failed")]
+  DecryptionFailed,
+
+  #[error("Message too short: expected at least {expected} bytes, got {actual}")]
+  MessageTooShort { expected: usize, actual: usize },
+
+  #[error("Varint decoding failed: value too large")]
+  VarintTooLarge,
+
+  #[error("Not ready: handshake not complete")]
+  NotReady,
+
+  #[error("IO error: {0}")]
+  Io(#[from] std::io::Error),
+}
+
+impl From<CodecError> for std::io::Error {
+  fn from(err: CodecError) -> Self {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, err)
+  }
+}
+
+/// A protobuf message with its type ID and serialized data
 #[derive(Debug, Clone)]
-// A common struct that holds shared fields between messages
 pub struct ProtobufMessage {
   pub protobuf_type: u32,
   pub protobuf_data: Vec<u8>,
 }
 
-pub enum EspHomeMessageType {
-  Response {
-    protobuf_message: ProtobufMessage,
-  },
-  Request {
-    protobuf_message: ProtobufMessage,
-  },
-  RequestWithAwait {
-    protobuf_message: ProtobufMessage,
-    response_protobuf_type: u32,
-    tx: oneshot::Sender<ProtobufMessage>,
-  },
-  RequestWithAwaitMultipleUntil {
-    protobuf_message: ProtobufMessage,
-    response_protobuf_types: Vec<u32>,
-    until_protobuf_type: u32,
-    tx: mpsc::Sender<ProtobufMessage>,
-  },
+/// Result of processing a handshake step
+pub enum HandshakeResult {
+  /// Need more data from the server to continue
+  NeedMoreData,
+  /// Send this frame to the server, then continue handshake
+  SendFrame(Bytes),
+  /// Handshake completed successfully, ready to split into encoder/decoder
+  Complete(EspHomeDecoder, EspHomeEncoder),
 }
 
-impl std::fmt::Debug for EspHomeMessageType {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    match self {
-      EspHomeMessageType::Response { protobuf_message } => f
-        .debug_struct("Response")
-        .field("protobuf_type", &protobuf_message.protobuf_type)
-        .field("protobuf_data", &protobuf_message.protobuf_data)
-        .finish(),
-      EspHomeMessageType::Request { protobuf_message } => f
-        .debug_struct("Request")
-        .field("protobuf_type", &protobuf_message.protobuf_type)
-        .field("protobuf_data", &protobuf_message.protobuf_data)
-        .finish(),
-      EspHomeMessageType::RequestWithAwait {
-        protobuf_message, ..
-      } => f
-        .debug_struct("RequestWithAwait")
-        .field("protobuf_type", &protobuf_message.protobuf_type)
-        .field("protobuf_data", &protobuf_message.protobuf_data)
-        .finish(),
-      EspHomeMessageType::RequestWithAwaitMultipleUntil {
-        protobuf_message, ..
-      } => f
-        .debug_struct("RequestWithAwaitMultipleUntil")
-        .field("protobuf_type", &protobuf_message.protobuf_type)
-        .field("protobuf_data", &protobuf_message.protobuf_data)
-        .finish(),
+/// Codec for handshake phase - handles both reading and writing during setup
+pub enum EspHomeHandshake {
+  Noise(NoiseHandshake),
+  Plain(PlainDecoder), // Plain doesn't need handshake, but we keep consistent API
+}
+
+impl EspHomeHandshake {
+  /// Create a new codec for the given connection parameters
+  ///
+  /// # Arguments
+  /// * `psk` - Optional base64-encoded pre-shared key for Noise encryption
+  /// * `expected_name` - Optional server name to verify during handshake
+  pub fn new(psk: Option<String>, expected_name: Option<String>) -> Result<Self, CodecError> {
+    match psk {
+      Some(psk) => Ok(Self::Noise(NoiseHandshake::new(&psk, expected_name)?)),
+      None => Ok(Self::Plain(PlainDecoder::new())),
     }
   }
-}
 
-#[derive(Debug)]
-/// Define the core message that will be used in the system
-pub struct EspHomeMessage {
-  pub message_type: EspHomeMessageType,
-}
-
-impl EspHomeMessage {
-  // Helper method to access the embedded ProtobufMessage from a Message
-  pub fn get_protobuf_message(&self) -> &ProtobufMessage {
-    match &self.message_type {
-      EspHomeMessageType::Response { protobuf_message }
-      | EspHomeMessageType::Request { protobuf_message }
-      | EspHomeMessageType::RequestWithAwait {
-        protobuf_message, ..
+  /// Process incoming data during handshake and potentially complete it
+  ///
+  /// Returns:
+  /// - `HandshakeResult::NeedMoreData` if more data is needed from the server
+  /// - `HandshakeResult::SendFrame` if a frame needs to be sent
+  /// - `HandshakeResult::Complete` when handshake is done
+  pub fn process(&mut self, src: &mut BytesMut) -> Result<HandshakeResult, CodecError> {
+    match self {
+      Self::Noise(handshake) => handshake.process(src),
+      Self::Plain(_) => {
+        // Plain doesn't need handshake, immediately ready
+        Ok(HandshakeResult::Complete(
+          EspHomeDecoder::Plain(PlainDecoder::new()),
+          EspHomeEncoder::Plain(PlainEncoder::new()),
+        ))
       }
-      | EspHomeMessageType::RequestWithAwaitMultipleUntil {
-        protobuf_message, ..
-      } => protobuf_message,
-    }
-  }
-
-  // Constructors for each message type
-  pub fn new_response(protobuf_type: u32, protobuf_data: Vec<u8>) -> Self {
-    EspHomeMessage {
-      message_type: EspHomeMessageType::Response {
-        protobuf_message: ProtobufMessage {
-          protobuf_type,
-          protobuf_data,
-        },
-      },
-    }
-  }
-
-  pub fn new_request(protobuf_type: u32, protobuf_data: Vec<u8>) -> Self {
-    EspHomeMessage {
-      message_type: EspHomeMessageType::Request {
-        protobuf_message: ProtobufMessage {
-          protobuf_type,
-          protobuf_data,
-        },
-      },
-    }
-  }
-
-  pub fn new_request_with_await(
-    protobuf_type: u32,
-    protobuf_data: Vec<u8>,
-    response_protobuf_type: u32,
-    tx: oneshot::Sender<ProtobufMessage>,
-  ) -> Self {
-    EspHomeMessage {
-      message_type: EspHomeMessageType::RequestWithAwait {
-        protobuf_message: ProtobufMessage {
-          protobuf_type,
-          protobuf_data,
-        },
-        response_protobuf_type,
-        tx,
-      },
-    }
-  }
-
-  pub fn new_request_with_await_multiple_until(
-    protobuf_type: u32,
-    protobuf_data: Vec<u8>,
-    response_protobuf_types: Vec<u32>,
-    until_protobuf_type: u32,
-    tx: mpsc::Sender<ProtobufMessage>,
-  ) -> Self {
-    EspHomeMessage {
-      message_type: EspHomeMessageType::RequestWithAwaitMultipleUntil {
-        protobuf_message: ProtobufMessage {
-          protobuf_type,
-          protobuf_data,
-        },
-        response_protobuf_types,
-        until_protobuf_type,
-        tx,
-      },
     }
   }
 }
 
-pub trait FrameCodec:
-  Encoder<EspHomeMessage, Error = std::io::Error>
-  + Decoder<Item = EspHomeMessage, Error = std::io::Error>
-{
-  fn parse_frame(
-    &self,
-    src: &mut bytes::BytesMut,
-    // TODO: refactor tuple return
-  ) -> Result<Option<(BytesMut, usize)>, std::io::Error>;
-  fn get_handshake_frame(&mut self) -> Option<Bytes>;
-  fn close(&mut self);
+/// Decoder for receiving messages after handshake is complete
+pub enum EspHomeDecoder {
+  Noise(NoiseDecoder),
+  Plain(PlainDecoder),
 }
 
-#[derive(Clone)]
-pub enum EspHomeCodec {
-  Noise(Arc<RwLock<Noise>>),
-  Plain(Arc<RwLock<Plain>>),
-}
-
-impl FrameCodec for EspHomeCodec {
-  fn parse_frame(
-    &self,
-    src: &mut bytes::BytesMut,
-  ) -> Result<Option<(BytesMut, usize)>, std::io::Error> {
-    match self {
-      EspHomeCodec::Noise(codec) => codec.read().unwrap().parse_frame(src),
-      EspHomeCodec::Plain(codec) => codec.read().unwrap().parse_frame(src),
-    }
-  }
-
-  fn get_handshake_frame(&mut self) -> Option<Bytes> {
-    match self {
-      EspHomeCodec::Noise(codec) => codec.write().unwrap().get_handshake_frame(),
-      EspHomeCodec::Plain(codec) => codec.write().unwrap().get_handshake_frame(),
-    }
-  }
-
-  fn close(&mut self) {
-    match self {
-      EspHomeCodec::Noise(codec) => codec.write().unwrap().close(),
-      EspHomeCodec::Plain(codec) => codec.write().unwrap().close(),
-    }
-  }
-}
-
-impl Encoder<EspHomeMessage> for EspHomeCodec {
+impl Decoder for EspHomeDecoder {
+  type Item = ProtobufMessage;
   type Error = std::io::Error;
 
-  fn encode(&mut self, item: EspHomeMessage, dst: &mut bytes::BytesMut) -> Result<(), Self::Error> {
+  fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
     match self {
-      EspHomeCodec::Noise(codec) => codec.write().unwrap().encode(item, dst),
-      EspHomeCodec::Plain(codec) => codec.write().unwrap().encode(item, dst),
+      Self::Noise(decoder) => decoder.decode(src),
+      Self::Plain(decoder) => decoder.decode(src),
     }
   }
 }
 
-impl Decoder for EspHomeCodec {
-  type Item = EspHomeMessage;
+/// Encoder for sending messages after handshake is complete
+pub enum EspHomeEncoder {
+  Noise(NoiseEncoder),
+  Plain(PlainEncoder),
+}
+
+impl Encoder<ProtobufMessage> for EspHomeEncoder {
   type Error = std::io::Error;
 
-  fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+  fn encode(&mut self, item: ProtobufMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
     match self {
-      EspHomeCodec::Noise(codec) => codec.write().unwrap().decode(src),
-      EspHomeCodec::Plain(codec) => codec.write().unwrap().decode(src),
+      Self::Noise(encoder) => encoder.encode(item.clone(), dst),
+      Self::Plain(encoder) => encoder.encode(item.clone(), dst),
     }
   }
 }

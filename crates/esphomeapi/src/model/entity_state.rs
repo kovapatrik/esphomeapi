@@ -3,7 +3,7 @@ use protobuf::Message as _;
 use super::services;
 use crate::{api, Result};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EntityState {
   AlarmControlPanel(services::AlarmControlPanelEntityState),
   BinarySensor(services::BinarySensorState),

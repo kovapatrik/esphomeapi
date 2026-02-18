@@ -9,3 +9,6 @@ resolver = "2"
 [profile.release]
 lto = true
 codegen-units = 1
+
+[workspace.dependencies]
+tracing = "0.1.44"
