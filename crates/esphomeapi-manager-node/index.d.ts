@@ -92,6 +92,17 @@ export interface EntityInfo {
   icon: string
 }
 
+/**
+ * Initialize the logger with a console-like object.
+ * The object must have `debug`, `info`, `warn`, and `error` methods.
+ *
+ * Example:
+ * ```javascript
+ * initLogger(console);
+ * ```
+ */
+export declare function initLogger(console: Pick<Console, 'log' | 'warn' | 'error' | 'info' | 'debug' | 'trace'>): void
+
 export interface LightCommandOptions {
   state?: boolean
   brightness?: number

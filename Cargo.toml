@@ -1,9 +1,5 @@
 [workspace]
-members = [
-  "crates/esphomeapi",
-  "crates/esphomeapi-manager",
-  "crates/esphomeapi-manager-node",
-]
+members = ["crates/*"]
 resolver = "2"
 
 [profile.release]

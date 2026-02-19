@@ -9,6 +9,8 @@ use esphomeapi::{
   model::{DeviceInfo, EntityInfo, UserService},
 };
 
+pub use esphomeapi::{Error, Result};
+
 pub use esphomeapi::discovery::{ServiceInfo, discover};
 use tokio::sync::{broadcast::Receiver, watch};
 use tracing::info;

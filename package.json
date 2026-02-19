@@ -21,7 +21,8 @@
     "lint": "biome lint --fix",
     "test": "ava",
     "format": "run-p format:rs format:toml",
-    "format:rs": "cargo fmt --all"
+    "format:rs": "cargo fmt --all",
+    "example": "pnpm --filter examples exec tsx"
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",

@@ -1,0 +1,12 @@
+{
+  "name": "examples",
+  "type": "module",
+  "packageManager": "pnpm@10.5.2",
+  "dependencies": {
+    "@kovapatrik/esphomeapi-manager": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "tsx": "4.21.0"
+  }
+}

@@ -10,7 +10,9 @@ crate-type = ["cdylib"]
 esphomeapi-manager = { path = "../esphomeapi-manager" }
 napi = { version = "3.8.3", features = ["tokio_rt"] }
 napi-derive = "3.5.2"
-tokio = { version = "1", features = ["rt"] }
+thiserror = "2.0.18"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["registry"] }
 
 [build-dependencies]
 napi-build = "2.3.1"
