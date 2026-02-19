@@ -1,12 +1,10 @@
-use std::{
-  collections::HashMap,
-  sync::{Arc, RwLock},
-};
+use std::sync::Arc;
 
 use esphomeapi::{
   Client,
   model::{EntityState, LightInfo, LightState},
 };
+use tokio::sync::watch;
 
 pub use esphomeapi::model::ColorMode;
 
@@ -148,19 +146,19 @@ impl<'a> LightCommandBuilder<'a> {
 pub struct Light {
   client: Arc<Client>,
   info: LightInfo,
-  states: Arc<RwLock<HashMap<u32, EntityState>>>,
+  state: watch::Receiver<Option<EntityState>>,
 }
 
 impl Light {
   pub fn new(
     client: Arc<Client>,
     info: LightInfo,
-    states: Arc<RwLock<HashMap<u32, EntityState>>>,
+    state: watch::Receiver<Option<EntityState>>,
   ) -> Self {
     Light {
       client,
       info,
-      states,
+      state,
     }
   }
 
@@ -169,15 +167,28 @@ impl Light {
   }
 
   pub fn get_state(&self) -> StateResult<LightState> {
-    let states_guard = self.states.read().unwrap();
-    let state = states_guard
-      .get(&self.info.entity_info.key)
-      .ok_or(StateError::EntityKeyNotFound(self.info.entity_info.key));
-
-    match state? {
-      EntityState::Light(state) => Ok(state.clone()),
-      _ => Err(StateError::NotValidState),
+    match self.state.borrow().as_ref() {
+      Some(EntityState::Light(state)) => Ok(state.clone()),
+      Some(_) => Err(StateError::NotValidState),
+      None => Err(StateError::EntityKeyNotFound(self.info.entity_info.key)),
     }
+  }
+
+  /// Returns a cloned receiver for watching state changes from an external context.
+  pub fn state_receiver(&self) -> watch::Receiver<Option<EntityState>> {
+    let mut rx = self.state.clone();
+    rx.borrow_and_update();
+    rx
+  }
+
+  /// Wait for the next state change and return the updated state.
+  pub async fn state_changed(&mut self) -> StateResult<LightState> {
+    self
+      .state
+      .changed()
+      .await
+      .map_err(|_| StateError::EntityKeyNotFound(self.info.entity_info.key))?;
+    self.get_state()
   }
 
   pub fn is_on(&self) -> esphomeapi::Result<bool> {

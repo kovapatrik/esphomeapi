@@ -1,5 +1,7 @@
 use esphomeapi_manager::entity::{BaseEntity as _, Light as RustLight};
+use esphomeapi_manager::EntityState;
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 use crate::model::ColorMode;
@@ -18,6 +20,22 @@ pub struct LightCommandOptions {
   pub transition_length: Option<f64>,
   pub flash_length: Option<f64>,
   pub effect: Option<String>,
+}
+
+#[napi(object)]
+pub struct LightState {
+  pub is_on: bool,
+  pub brightness: f64,
+  pub color_mode: ColorMode,
+  pub color_brightness: f64,
+  pub red: f64,
+  pub green: f64,
+  pub blue: f64,
+  pub white: f64,
+  pub color_temperature: f64,
+  pub cold_white: f64,
+  pub warm_white: f64,
+  pub effect: String,
 }
 
 #[napi]
@@ -51,6 +69,124 @@ impl Light {
       .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
   }
 
+  #[napi(getter)]
+  pub fn brightness(&self) -> Result<f64> {
+    self
+      .inner
+      .brightness()
+      .map(|v| v as f64)
+      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+  }
+
+  #[napi(getter)]
+  pub fn color_mode(&self) -> Result<ColorMode> {
+    self
+      .inner
+      .color_mode()
+      .map(|cm| cm.into())
+      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+  }
+
+  #[napi(getter)]
+  pub fn color_brightness(&self) -> Result<f64> {
+    self
+      .inner
+      .color_brightness()
+      .map(|v| v as f64)
+      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+  }
+
+  #[napi(getter)]
+  pub fn rgb(&self) -> Result<(f64, f64, f64)> {
+    self
+      .inner
+      .rgb()
+      .map(|(r, g, b)| (r as f64, g as f64, b as f64))
+      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+  }
+
+  #[napi(getter)]
+  pub fn white(&self) -> Result<f64> {
+    self
+      .inner
+      .white()
+      .map(|v| v as f64)
+      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+  }
+
+  #[napi(getter)]
+  pub fn color_temperature(&self) -> Result<f64> {
+    self
+      .inner
+      .color_temperature()
+      .map(|v| v as f64)
+      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+  }
+
+  #[napi(getter)]
+  pub fn cold_white(&self) -> Result<f64> {
+    self
+      .inner
+      .cold_white()
+      .map(|v| v as f64)
+      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+  }
+
+  #[napi(getter)]
+  pub fn warm_white(&self) -> Result<f64> {
+    self
+      .inner
+      .warm_white()
+      .map(|v| v as f64)
+      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+  }
+
+  #[napi(getter)]
+  pub fn effect(&self) -> Result<String> {
+    self
+      .inner
+      .effect()
+      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+  }
+
+  /// Register a callback that is called whenever the light state changes.
+  ///
+  /// The callback receives a `LightState` object with all current state values.
+  #[napi(
+    ts_args_type = "callback: (state: LightState) => void",
+    ts_return_type = "void"
+  )]
+  pub fn on_state_change(
+    &self,
+    callback: ThreadsafeFunction<LightState, (), LightState, Status, false, true>,
+  ) -> Result<()> {
+    let mut receiver = self.inner.state_receiver();
+
+    napi::bindgen_prelude::spawn(async move {
+      while receiver.changed().await.is_ok() {
+        if let Some(EntityState::Light(s)) = receiver.borrow().clone() {
+          let state = LightState {
+            is_on: s.state,
+            brightness: s.brightness as f64,
+            color_mode: s.color_mode.into(),
+            color_brightness: s.color_brightness as f64,
+            red: s.red as f64,
+            green: s.green as f64,
+            blue: s.blue as f64,
+            white: s.white as f64,
+            color_temperature: s.color_temperature as f64,
+            cold_white: s.cold_white as f64,
+            warm_white: s.warm_white as f64,
+            effect: s.effect,
+          };
+          callback.call(state, ThreadsafeFunctionCallMode::NonBlocking);
+        }
+      }
+    });
+
+    Ok(())
+  }
+
   #[napi]
   pub async fn turn_on(&self) -> Result<()> {
     self
@@ -75,79 +211,6 @@ impl Light {
       .inner
       .toggle()
       .await
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
-  }
-
-  #[napi(getter)]
-  pub fn brightness(&self) -> Result<f32> {
-    self
-      .inner
-      .brightness()
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
-  }
-
-  #[napi(getter)]
-  pub fn color_mode(&self) -> Result<ColorMode> {
-    self
-      .inner
-      .color_mode()
-      .map(|cm| cm.into())
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
-  }
-
-  #[napi(getter)]
-  pub fn color_brightness(&self) -> Result<f32> {
-    self
-      .inner
-      .color_brightness()
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
-  }
-
-  #[napi(getter)]
-  pub fn rgb(&self) -> Result<(f32, f32, f32)> {
-    self
-      .inner
-      .rgb()
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
-  }
-
-  #[napi(getter)]
-  pub fn white(&self) -> Result<f32> {
-    self
-      .inner
-      .white()
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
-  }
-
-  #[napi(getter)]
-  pub fn color_temperature(&self) -> Result<f32> {
-    self
-      .inner
-      .color_temperature()
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
-  }
-
-  #[napi(getter)]
-  pub fn cold_white(&self) -> Result<f32> {
-    self
-      .inner
-      .cold_white()
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
-  }
-
-  #[napi(getter)]
-  pub fn warm_white(&self) -> Result<f32> {
-    self
-      .inner
-      .warm_white()
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
-  }
-
-  #[napi(getter)]
-  pub fn effect(&self) -> Result<String> {
-    self
-      .inner
-      .effect()
       .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
   }
 

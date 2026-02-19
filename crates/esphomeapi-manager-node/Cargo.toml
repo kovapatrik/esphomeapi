@@ -8,8 +8,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 esphomeapi-manager = { path = "../esphomeapi-manager" }
-napi = { version = "3.3.0", features = ["tokio_rt"] }
-napi-derive = "3.2.5"
+napi = { version = "3.8.3", features = ["tokio_rt"] }
+napi-derive = "3.5.2"
+tokio = { version = "1", features = ["rt"] }
 
 [build-dependencies]
-napi-build = "2.2.3"
+napi-build = "2.3.1"

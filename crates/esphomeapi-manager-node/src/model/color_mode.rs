@@ -5,7 +5,8 @@ use napi_derive::napi;
 pub enum ColorMode {
   Unknown = 0,
   OnOff = 1,
-  Brightness = 2,
+  LegacyBrightness = 2,
+  Brightness = 3,
   White = 7,
   ColorTemperature = 11,
   ColdWarmWhite = 19,
@@ -20,6 +21,7 @@ impl From<RustColorMode> for ColorMode {
     match color_mode {
       RustColorMode::Unknown => ColorMode::Unknown,
       RustColorMode::OnOff => ColorMode::OnOff,
+      RustColorMode::LegacyBrightness => ColorMode::LegacyBrightness,
       RustColorMode::Brightness => ColorMode::Brightness,
       RustColorMode::White => ColorMode::White,
       RustColorMode::ColorTemperature => ColorMode::ColorTemperature,
@@ -37,6 +39,7 @@ impl From<ColorMode> for RustColorMode {
     match color_mode {
       ColorMode::Unknown => RustColorMode::Unknown,
       ColorMode::OnOff => RustColorMode::OnOff,
+      ColorMode::LegacyBrightness => RustColorMode::LegacyBrightness,
       ColorMode::Brightness => RustColorMode::Brightness,
       ColorMode::White => RustColorMode::White,
       ColorMode::ColorTemperature => RustColorMode::ColorTemperature,

@@ -4,9 +4,6 @@ export declare class Light {
   get key(): number
   get name(): string
   get isOn(): boolean
-  turnOn(): Promise<void>
-  turnOff(): Promise<void>
-  toggle(): Promise<void>
   get brightness(): number
   get colorMode(): ColorMode
   get colorBrightness(): number
@@ -16,6 +13,15 @@ export declare class Light {
   get coldWhite(): number
   get warmWhite(): number
   get effect(): string
+  /**
+   * Register a callback that is called whenever the light state changes.
+   *
+   * The callback receives a `LightState` object with all current state values.
+   */
+  onStateChange(callback: (state: LightState) => void): void
+  turnOn(): Promise<void>
+  turnOff(): Promise<void>
+  toggle(): Promise<void>
   sendCommand(options: LightCommandOptions): Promise<void>
 }
 
@@ -32,6 +38,12 @@ export declare class Switch {
   get key(): number
   get name(): string
   get isOn(): boolean
+  /**
+   * Register a callback that is called whenever the switch state changes.
+   *
+   * The callback receives a single boolean argument indicating whether the switch is on.
+   */
+  onStateChange(callback: (isOn: boolean) => void): void
   turnOn(): Promise<void>
   turnOff(): Promise<void>
   toggle(): Promise<void>
@@ -41,7 +53,8 @@ export declare class Switch {
 export declare const enum ColorMode {
   Unknown = 0,
   OnOff = 1,
-  Brightness = 2,
+  LegacyBrightness = 2,
+  Brightness = 3,
   White = 7,
   ColorTemperature = 11,
   ColdWarmWhite = 19,
@@ -92,6 +105,21 @@ export interface LightCommandOptions {
   transitionLength?: number
   flashLength?: number
   effect?: string
+}
+
+export interface LightState {
+  isOn: boolean
+  brightness: number
+  colorMode: ColorMode
+  colorBrightness: number
+  red: number
+  green: number
+  blue: number
+  white: number
+  colorTemperature: number
+  coldWhite: number
+  warmWhite: number
+  effect: string
 }
 
 export interface ServiceInfo {
