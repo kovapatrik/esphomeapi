@@ -191,7 +191,10 @@ impl NoiseHandshake {
   }
 
   /// Handle the handshake response and complete the handshake
-  fn handle_handshake_response(&mut self, mut data: BytesMut) -> Result<HandshakeResult, CodecError> {
+  fn handle_handshake_response(
+    &mut self,
+    mut data: BytesMut,
+  ) -> Result<HandshakeResult, CodecError> {
     // Check for error response (error flag = 0x01)
     let first_byte = data.first().copied().unwrap_or(0);
     if first_byte == 0x01 {

@@ -15,7 +15,9 @@ use tokio::time::timeout;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
-use crate::model::{CameraImage, EntityState, HomeAssistantEvent, HomeassistantActionRequest, LogEvent};
+use crate::model::{
+  CameraImage, EntityState, HomeAssistantEvent, HomeassistantActionRequest, LogEvent,
+};
 use crate::{proto, Result};
 
 use crate::utils::Options as _;
