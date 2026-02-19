@@ -1,12 +1,10 @@
-use std::{
-  collections::HashMap,
-  sync::{Arc, RwLock},
-};
+use std::sync::Arc;
 
 use esphomeapi::{
   Client,
   model::{EntityState, SwitchInfo, SwitchState},
 };
+use tokio::sync::watch;
 
 use super::{BaseEntity, StateError, StateResult};
 
@@ -14,38 +12,49 @@ use super::{BaseEntity, StateError, StateResult};
 pub struct Switch {
   client: Arc<Client>,
   info: SwitchInfo,
-  states: Arc<RwLock<HashMap<u32, EntityState>>>,
+  state: watch::Receiver<Option<EntityState>>,
 }
 
 impl Switch {
   pub fn new(
     client: Arc<Client>,
     info: SwitchInfo,
-    states: Arc<RwLock<HashMap<u32, EntityState>>>,
+    state: watch::Receiver<Option<EntityState>>,
   ) -> Self {
     Switch {
       client,
       info,
-      states,
+      state,
     }
   }
 
   pub fn get_state(&self) -> StateResult<SwitchState> {
-    let states_guard = self.states.read().unwrap();
-    let state = states_guard
-      .get(&self.info.entity_info.key)
-      .ok_or(StateError::EntityKeyNotFound(self.info.entity_info.key));
-
-    match state? {
-      EntityState::Switch(state) => Ok(state.clone()),
-      _ => Err(StateError::NotValidState),
+    match self.state.borrow().as_ref() {
+      Some(EntityState::Switch(state)) => Ok(state.clone()),
+      Some(_) => Err(StateError::NotValidState),
+      None => Err(StateError::EntityKeyNotFound(self.info.entity_info.key)),
     }
   }
 
-  pub fn is_on(&self) -> esphomeapi::Result<bool> {
-    let state = self.get_state()?;
+  /// Returns a cloned receiver for watching state changes from an external context.
+  pub fn state_receiver(&self) -> watch::Receiver<Option<EntityState>> {
+    let mut rx = self.state.clone();
+    rx.borrow_and_update();
+    rx
+  }
 
-    Ok(state.state)
+  /// Wait for the next state change and return the updated state.
+  pub async fn state_changed(&mut self) -> StateResult<SwitchState> {
+    self
+      .state
+      .changed()
+      .await
+      .map_err(|_| StateError::EntityKeyNotFound(self.info.entity_info.key))?;
+    self.get_state()
+  }
+
+  pub fn is_on(&self) -> StateResult<bool> {
+    Ok(self.get_state()?.state)
   }
 
   pub async fn turn_on(&self) -> esphomeapi::Result<()> {

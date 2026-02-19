@@ -1,19 +1,28 @@
 use protobuf::{EnumOrUnknown, Message};
+use tokio::sync::broadcast;
 
 use crate::{
-  connection::Callback,
+  connection::{Connected, Connection, Disconnected},
   model::{
-    parse_user_service, ColorMode, DeviceInfo, EntityInfo, UserService,
+    parse_user_service, CameraImage, ColorMode, DeviceInfo, EntityInfo, EntityState,
+    HomeAssistantEvent, HomeassistantActionRequest, LogEvent, UserService,
     LIST_ENTITIES_SERVICES_RESPONSE_TYPES,
   },
   utils::Options as _,
 };
 use std::time::Duration;
 
-use crate::{connection::Connection, proto, Result};
+use crate::{proto, Result};
+
+/// Internal enum to wrap both connection states
+enum ConnectionState {
+  Disconnected(Connection<Disconnected>),
+  Connected(Connection<Connected>),
+}
 
 pub struct Client {
-  connection: Connection,
+  /// The wrapped connection, using Option to allow state transitions
+  connection: Option<ConnectionState>,
 }
 
 impl Client {
@@ -27,7 +36,7 @@ impl Client {
     keep_alive_duration: Option<u32>,
   ) -> Self {
     Self {
-      connection: Connection::new(
+      connection: Some(ConnectionState::Disconnected(Connection::new(
         address,
         port,
         password,
@@ -35,19 +44,71 @@ impl Client {
         psk,
         client_info,
         keep_alive_duration,
-      ),
+      ))),
     }
   }
 
+  /// Connect to the ESPHome device
   pub async fn connect(&mut self, login: bool) -> Result<()> {
-    self.connection.connect(login).await
+    let conn = self
+      .connection
+      .take()
+      .ok_or("Connection state is invalid")?;
+
+    match conn {
+      ConnectionState::Disconnected(c) => {
+        let connected = c.connect(login).await?;
+        self.connection = Some(ConnectionState::Connected(connected));
+        Ok(())
+      }
+      ConnectionState::Connected(c) => {
+        // Already connected, put it back
+        self.connection = Some(ConnectionState::Connected(c));
+        Err("Already connected".into())
+      }
+    }
+  }
+
+  /// Disconnect from the ESPHome device
+  pub async fn disconnect(&mut self) -> Result<()> {
+    let conn = self
+      .connection
+      .take()
+      .ok_or("Connection state is invalid")?;
+
+    match conn {
+      ConnectionState::Connected(c) => {
+        let disconnected = c.disconnect().await?;
+        self.connection = Some(ConnectionState::Disconnected(disconnected));
+        Ok(())
+      }
+      ConnectionState::Disconnected(c) => {
+        // Already disconnected, put it back
+        self.connection = Some(ConnectionState::Disconnected(c));
+        Ok(())
+      }
+    }
+  }
+
+  /// Check if connected
+  pub fn is_connected(&self) -> bool {
+    matches!(self.connection, Some(ConnectionState::Connected(_)))
+  }
+
+  /// Get a reference to the connected connection, or return an error
+  fn connected(&self) -> Result<&Connection<Connected>> {
+    match &self.connection {
+      Some(ConnectionState::Connected(c)) => Ok(c),
+      Some(ConnectionState::Disconnected(_)) => Err("Not connected".into()),
+      None => Err("Connection state is invalid".into()),
+    }
   }
 
   pub async fn device_info(&self) -> Result<DeviceInfo> {
+    let conn = self.connected()?;
     let message = proto::api::DeviceInfoRequest::default();
 
-    let response = self
-      .connection
+    let response = conn
       .send_message_await_response(
         Box::new(message),
         proto::api::DeviceInfoResponse::get_option_id(),
@@ -60,6 +121,7 @@ impl Client {
   }
 
   pub async fn list_entities_services(&self) -> Result<(Vec<EntityInfo>, Vec<UserService>)> {
+    let conn = self.connected()?;
     let message = proto::api::ListEntitiesRequest::new();
 
     let entity_service_map = LIST_ENTITIES_SERVICES_RESPONSE_TYPES.clone();
@@ -67,8 +129,7 @@ impl Client {
     // Add user defined services to the list of expected responses
     response_protobuf_types.push(proto::api::ListEntitiesServicesResponse::get_option_id());
 
-    let response = self
-      .connection
+    let response = conn
       .send_message_await_until(
         Box::new(message),
         response_protobuf_types,
@@ -76,7 +137,6 @@ impl Client {
         Duration::from_secs(60),
       )
       .await?;
-    println!("Received list entities services response");
 
     let mut entities = Vec::new();
     let mut services = Vec::new();
@@ -96,31 +156,87 @@ impl Client {
     Ok((entities, services))
   }
 
-  pub fn add_message_handler(
-    &mut self,
-    msg_type: u32,
-    callback: Callback,
-    remove_after_call: bool,
-  ) {
-    self
-      .connection
-      .add_message_handler(msg_type, callback, remove_after_call);
+  /// Subscribe to camera image frames.
+  ///
+  /// Camera frames are sent automatically by the device once states are subscribed.
+  /// Call this before `subscribe_states` to avoid missing early frames.
+  pub fn subscribe_camera(&self) -> Result<broadcast::Receiver<CameraImage>> {
+    let conn = self.connected()?;
+    Ok(conn.subscribe_camera())
   }
 
-  pub async fn subscribe_states(&mut self) -> Result<()> {
+  /// Subscribe to entity state updates.
+  ///
+  /// This sends a SubscribeStatesRequest to the device and returns a receiver
+  /// for state update events. The device will continuously send state updates
+  /// for all entities.
+  pub async fn subscribe_states(&self) -> Result<broadcast::Receiver<EntityState>> {
+    let conn = self.connected()?;
+    let subscription = conn.subscribe_states();
     let message = proto::api::SubscribeStatesRequest::new();
-    self.connection.send_message(Box::new(message)).await?;
-    Ok(())
+    conn.send_message(Box::new(message)).await?;
+    Ok(subscription)
+  }
+
+  /// Subscribe to Home Assistant state events.
+  ///
+  /// This sends a SubscribeHomeAssistantStatesRequest to the device and returns
+  /// a receiver for HA state events. The device will send events indicating which
+  /// Home Assistant entities it wants to monitor.
+  pub async fn subscribe_home_assistant_states(
+    &self,
+  ) -> Result<broadcast::Receiver<HomeAssistantEvent>> {
+    let conn = self.connected()?;
+    let subscription = conn.subscribe_home_assistant_events();
+    let message = proto::api::SubscribeHomeAssistantStatesRequest::new();
+    conn.send_message(Box::new(message)).await?;
+    Ok(subscription)
+  }
+
+  /// Subscribe to log events.
+  ///
+  /// This sends a SubscribeLogsRequest to the device and returns a receiver
+  /// for log events. You can specify the minimum log level to receive.
+  pub async fn subscribe_logs(
+    &self,
+    level: proto::api::LogLevel,
+    dump_config: bool,
+  ) -> Result<broadcast::Receiver<LogEvent>> {
+    let conn = self.connected()?;
+    let subscription = conn.subscribe_logs();
+    let message = proto::api::SubscribeLogsRequest {
+      level: EnumOrUnknown::new(level),
+      dump_config,
+      ..Default::default()
+    };
+    conn.send_message(Box::new(message)).await?;
+    Ok(subscription)
+  }
+
+  /// Subscribe to Home Assistant action request events.
+  ///
+  /// This sends a SubscribeHomeassistantServicesRequest to the device and returns
+  /// a receiver for action request events. The device will send events when it wants
+  /// to trigger a Home Assistant service.
+  pub async fn subscribe_home_assistant_action_requests(
+    &self,
+  ) -> Result<broadcast::Receiver<HomeassistantActionRequest>> {
+    let conn = self.connected()?;
+    let subscription = conn.subscribe_action_requests();
+    let message = proto::api::SubscribeHomeassistantServicesRequest::new();
+    conn.send_message(Box::new(message)).await?;
+    Ok(subscription)
   }
 
   pub async fn switch_command(&self, key: u32, state: bool) -> Result<()> {
+    let conn = self.connected()?;
     let message = proto::api::SwitchCommandRequest {
       key,
       state,
       ..Default::default()
     };
 
-    self.connection.send_message(Box::new(message)).await?;
+    conn.send_message(Box::new(message)).await?;
     Ok(())
   }
 
@@ -140,6 +256,7 @@ impl Client {
     flash_length: Option<f32>,
     effect: Option<String>,
   ) -> Result<()> {
+    let conn = self.connected()?;
     let message = proto::api::LightCommandRequest {
       key,
       has_state: state.is_some(),
@@ -171,7 +288,29 @@ impl Client {
       ..Default::default()
     };
 
-    self.connection.send_message(Box::new(message)).await?;
+    conn.send_message(Box::new(message)).await?;
+    Ok(())
+  }
+
+  /// Send the current state of a Home Assistant entity to the device.
+  ///
+  /// This is used to respond to HomeAssistantEvent::StateRequest or
+  /// to update the device when a subscribed entity changes.
+  pub async fn send_home_assistant_state(
+    &self,
+    entity_id: String,
+    state: String,
+    attribute: Option<String>,
+  ) -> Result<()> {
+    let conn = self.connected()?;
+    let message = proto::api::HomeAssistantStateResponse {
+      entity_id,
+      state,
+      attribute: attribute.unwrap_or_default(),
+      ..Default::default()
+    };
+
+    conn.send_message(Box::new(message)).await?;
     Ok(())
   }
 }

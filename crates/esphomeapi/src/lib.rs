@@ -11,7 +11,7 @@ pub mod model;
 mod utils;
 
 pub use client::Client;
-pub use connection::Connection;
+pub use connection::{Connected, Connection, Disconnected};
 pub use utils::Options;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;

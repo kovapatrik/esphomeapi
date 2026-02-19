@@ -1,5 +1,7 @@
 use esphomeapi_manager::entity::{BaseEntity as _, Switch as RustSwitch};
+use esphomeapi_manager::EntityState;
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 #[napi]
@@ -31,6 +33,30 @@ impl Switch {
       Ok(state) => Ok(state.state),
       Err(e) => Err(Error::new(Status::GenericFailure, e.to_string())),
     }
+  }
+
+  /// Register a callback that is called whenever the switch state changes.
+  ///
+  /// The callback receives a single boolean argument indicating whether the switch is on.
+  #[napi(
+    ts_args_type = "callback: (isOn: boolean) => void",
+    ts_return_type = "void"
+  )]
+  pub fn on_state_change(
+    &self,
+    callback: ThreadsafeFunction<bool, (), bool, Status, false, true>,
+  ) -> Result<()> {
+    let mut receiver = self.inner.state_receiver();
+
+    napi::bindgen_prelude::spawn(async move {
+      while receiver.changed().await.is_ok() {
+        if let Some(EntityState::Switch(s)) = receiver.borrow().clone() {
+          callback.call(s.state, ThreadsafeFunctionCallMode::NonBlocking);
+        }
+      }
+    });
+
+    Ok(())
   }
 
   #[napi]

@@ -1,24 +1,23 @@
-use std::{
-  collections::HashMap,
-  sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, sync::Arc};
 
 pub mod entity;
 
 use entity::Entity;
+pub use esphomeapi::model::EntityState;
 use esphomeapi::{
-  Client, Options as _, api,
-  model::{DeviceInfo, EntityInfo, EntityState, SUBCRIBE_STATES_RESPONSE_TYPES, UserService},
+  Client,
+  model::{DeviceInfo, EntityInfo, UserService},
 };
 
 pub use esphomeapi::{Error, Result};
 
 pub use esphomeapi::discovery::{ServiceInfo, discover};
+use tokio::sync::{broadcast::Receiver, watch};
+use tracing::info;
 
 pub struct Manager {
   pub device_info: DeviceInfo,
   entities: HashMap<u32, Entity>,
-  states: Arc<RwLock<HashMap<u32, EntityState>>>,
   services: HashMap<u32, UserService>,
 }
 
@@ -46,48 +45,24 @@ impl Manager {
     let device_info = client.device_info().await.unwrap();
     let (entities_response, services_response) = client.list_entities_services().await.unwrap();
 
-    let states = Arc::new(RwLock::new(HashMap::new()));
-
-    let mut state_msg_types = SUBCRIBE_STATES_RESPONSE_TYPES
-      .keys()
-      .cloned()
-      .collect::<Vec<u32>>();
-
-    state_msg_types.push(api::CameraImageResponse::get_option_id());
-
-    for msg_type in state_msg_types {
-      let states = states.clone();
-      client.add_message_handler(
-        msg_type,
-        Box::new(move |_, msg| {
-          if msg.protobuf_type == api::CameraImageResponse::get_option_id() {
-            return Ok(());
-          }
-
-          if let Some(parser) = SUBCRIBE_STATES_RESPONSE_TYPES.get(&msg.protobuf_type) {
-            let state = parser(&msg.protobuf_data).unwrap();
-            states.write().unwrap().insert(state.key(), state);
-          }
-          Ok(())
-        }),
-        false,
-      );
-    }
-
-    client.subscribe_states().await.unwrap();
-
-    let mut entities = HashMap::new();
-
     let client = Arc::new(client);
+
+    // Create a watch channel per entity and build entity map
+    let mut state_senders: HashMap<u32, watch::Sender<Option<EntityState>>> = HashMap::new();
+    let mut entities = HashMap::new();
 
     for entity in entities_response {
       match entity {
         EntityInfo::Light(info) => {
-          let entity = entity::Light::new(client.clone(), info.clone(), states.clone());
+          let (tx, rx) = watch::channel(None);
+          state_senders.insert(info.entity_info.key, tx);
+          let entity = entity::Light::new(client.clone(), info.clone(), rx);
           entities.insert(info.entity_info.key, Entity::Light(entity));
         }
         EntityInfo::Switch(info) => {
-          let entity = entity::Switch::new(client.clone(), info.clone(), states.clone());
+          let (tx, rx) = watch::channel(None);
+          state_senders.insert(info.entity_info.key, tx);
+          let entity = entity::Switch::new(client.clone(), info.clone(), rx);
           entities.insert(info.entity_info.key, Entity::Switch(entity));
         }
         _ => {}
@@ -95,20 +70,35 @@ impl Manager {
     }
 
     let mut services = HashMap::new();
-
     for service in services_response {
       services.insert(service.key, service);
     }
+
+    let state_subscriber = client.subscribe_states().await.unwrap();
+    Self::spawn_state_update_task(state_senders, state_subscriber);
 
     Self {
       device_info,
       entities,
       services,
-      states,
     }
   }
 
   pub fn get_entities(&self) -> HashMap<u32, Entity> {
     self.entities.clone()
+  }
+
+  fn spawn_state_update_task(
+    state_senders: HashMap<u32, watch::Sender<Option<EntityState>>>,
+    mut subscriber: Receiver<EntityState>,
+  ) {
+    tokio::spawn(async move {
+      while let Ok(state) = subscriber.recv().await {
+        info!(state = ?state, "got state");
+        if let Some(tx) = state_senders.get(&state.key()) {
+          let _ = tx.send(Some(state));
+        }
+      }
+    });
   }
 }
