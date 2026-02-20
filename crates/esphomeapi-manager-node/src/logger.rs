@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use tracing::{Level, Subscriber};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
-use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
+use tracing_subscriber::{layer::Context, Layer};
 
 pub type LogFn = Box<dyn Fn(String) + Send + Sync>;
 
@@ -96,15 +96,13 @@ fn get_method(obj: &Object, name: &str) -> Result<LogFn> {
 }
 
 /// Initialize the logger with a console-like object.
-/// The object must have `debug`, `info`, `warn`, and `error` methods.
+/// The object must have `debug`, `info`, `warn`, `error` and `trace` methods.
 ///
 /// Example:
 /// ```javascript
 /// initLogger(console);
 /// ```
-#[napi(
-  ts_args_type = "console: Pick<Console, 'log' | 'warn' | 'error' | 'info' | 'debug' | 'trace'>"
-)]
+#[napi(ts_args_type = "console: Pick<Console, 'warn' | 'error' | 'info' | 'debug' | 'trace'>")]
 pub fn init_logger(console: Object) -> Result<()> {
   let trace = get_method(&console, "trace")?;
   let debug = get_method(&console, "debug")?;

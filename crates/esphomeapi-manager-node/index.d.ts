@@ -29,9 +29,7 @@ export declare class Manager {
   static connect(options: ConnectionOptions): Promise<Manager>
   getDeviceName(): string
   getDeviceMac(): string
-  getEntities(): Array<Entity>
-  getSwitch(key: number): Switch
-  getLight(key: number): Light
+  getEntities(): Array<Light | Switch>
 }
 
 export declare class Switch {
@@ -76,32 +74,16 @@ export interface ConnectionOptions {
 
 export declare function discover(seconds: number): Promise<Array<ServiceInfo>>
 
-export type Entity =
-  | { type: 'Light', field0: number }
-  | { type: 'Switch', field0: number }
-  | { type: 'Sensor', field0: number }
-
-export interface EntityInfo {
-  key: number
-  name: string
-  uniqueId: string
-  objectId: string
-  deviceClass: string
-  disabledByDefault: boolean
-  entityCategory: string
-  icon: string
-}
-
 /**
  * Initialize the logger with a console-like object.
- * The object must have `debug`, `info`, `warn`, and `error` methods.
+ * The object must have `debug`, `info`, `warn`, `error` and `trace` methods.
  *
  * Example:
  * ```javascript
  * initLogger(console);
  * ```
  */
-export declare function initLogger(console: Pick<Console, 'log' | 'warn' | 'error' | 'info' | 'debug' | 'trace'>): void
+export declare function initLogger(console: Pick<Console, 'warn' | 'error' | 'info' | 'debug' | 'trace'>): void
 
 export interface LightCommandOptions {
   state?: boolean

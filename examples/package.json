@@ -3,6 +3,7 @@
   "type": "module",
   "packageManager": "pnpm@10.5.2",
   "dependencies": {
+    "@dotenvx/dotenvx": "^1.52.0",
     "@kovapatrik/esphomeapi-manager": "workspace:*"
   },
   "devDependencies": {

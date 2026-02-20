@@ -5,13 +5,16 @@ use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 #[napi]
+#[derive(Clone)]
 pub struct Switch {
   inner: RustSwitch,
 }
 
 impl Switch {
-  pub fn new(rust_switch: RustSwitch) -> Self {
-    Switch { inner: rust_switch }
+  pub fn new(rust_switch: &RustSwitch) -> Self {
+    Switch {
+      inner: rust_switch.clone(),
+    }
   }
 }
 

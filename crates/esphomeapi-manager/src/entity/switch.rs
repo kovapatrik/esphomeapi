@@ -38,9 +38,7 @@ impl Switch {
 
   /// Returns a cloned receiver for watching state changes from an external context.
   pub fn state_receiver(&self) -> watch::Receiver<Option<EntityState>> {
-    let mut rx = self.state.clone();
-    rx.borrow_and_update();
-    rx
+    self.state.clone()
   }
 
   /// Wait for the next state change and return the updated state.

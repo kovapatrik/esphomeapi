@@ -22,7 +22,7 @@
     "test": "ava",
     "format": "run-p format:rs format:toml",
     "format:rs": "cargo fmt --all",
-    "example": "pnpm --filter examples exec tsx"
+    "example": "pnpm --filter examples exec dotenvx run -- tsx"
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",

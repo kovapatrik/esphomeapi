@@ -84,8 +84,8 @@ impl Manager {
     }
   }
 
-  pub fn get_entities(&self) -> HashMap<u32, Entity> {
-    self.entities.clone()
+  pub fn get_entities(&self) -> &HashMap<u32, Entity> {
+    &self.entities
   }
 
   fn spawn_state_update_task(

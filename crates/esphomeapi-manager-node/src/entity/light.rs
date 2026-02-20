@@ -39,13 +39,16 @@ pub struct LightState {
 }
 
 #[napi]
+#[derive(Clone)]
 pub struct Light {
   inner: RustLight,
 }
 
 impl Light {
-  pub fn new(rust_light: RustLight) -> Self {
-    Light { inner: rust_light }
+  pub fn new(rust_light: &RustLight) -> Self {
+    Light {
+      inner: rust_light.clone(),
+    }
   }
 }
 
