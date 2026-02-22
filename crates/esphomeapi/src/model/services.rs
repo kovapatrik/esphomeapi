@@ -1656,6 +1656,21 @@ impl From<proto::api::LogLevel> for LogLevel {
   }
 }
 
+impl From<LogLevel> for proto::api::LogLevel {
+  fn from(value: LogLevel) -> Self {
+    match value {
+      LogLevel::None => proto::api::LogLevel::LOG_LEVEL_NONE,
+      LogLevel::Error => proto::api::LogLevel::LOG_LEVEL_ERROR,
+      LogLevel::Warn => proto::api::LogLevel::LOG_LEVEL_WARN,
+      LogLevel::Info => proto::api::LogLevel::LOG_LEVEL_INFO,
+      LogLevel::Config => proto::api::LogLevel::LOG_LEVEL_CONFIG,
+      LogLevel::Debug => proto::api::LogLevel::LOG_LEVEL_DEBUG,
+      LogLevel::Verbose => proto::api::LogLevel::LOG_LEVEL_VERBOSE,
+      LogLevel::VeryVerbose => proto::api::LogLevel::LOG_LEVEL_VERY_VERBOSE,
+    }
+  }
+}
+
 // ==================== LOG EVENT ====================
 
 /// Event received when subscribed to device logs

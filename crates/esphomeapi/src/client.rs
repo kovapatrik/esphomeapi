@@ -5,7 +5,7 @@ use crate::{
   connection::{Connected, Connection, Disconnected},
   model::{
     parse_user_service, CameraImage, ColorMode, DeviceInfo, EntityInfo, EntityState,
-    HomeAssistantEvent, HomeassistantActionRequest, LogEvent, UserService,
+    HomeAssistantEvent, HomeassistantActionRequest, LogEvent, LogLevel, UserService,
     LIST_ENTITIES_SERVICES_RESPONSE_TYPES,
   },
   utils::Options as _,
@@ -156,76 +156,100 @@ impl Client {
     Ok((entities, services))
   }
 
-  /// Subscribe to camera image frames.
+  /// Send a SubscribeStatesRequest to the device.
   ///
-  /// Camera frames are sent automatically by the device once states are subscribed.
-  /// Call this before `subscribe_states` to avoid missing early frames.
-  pub fn subscribe_camera(&self) -> Result<broadcast::Receiver<CameraImage>> {
+  /// Call this once to start receiving entity state updates. After calling this,
+  /// use `states_receiver()` to get one or more independent receivers for the stream.
+  pub async fn request_states(&self) -> Result<()> {
     let conn = self.connected()?;
-    Ok(conn.subscribe_camera())
-  }
-
-  /// Subscribe to entity state updates.
-  ///
-  /// This sends a SubscribeStatesRequest to the device and returns a receiver
-  /// for state update events. The device will continuously send state updates
-  /// for all entities.
-  pub async fn subscribe_states(&self) -> Result<broadcast::Receiver<EntityState>> {
-    let conn = self.connected()?;
-    let subscription = conn.subscribe_states();
     let message = proto::api::SubscribeStatesRequest::new();
-    conn.send_message(Box::new(message)).await?;
-    Ok(subscription)
+    conn.send_message(Box::new(message)).await
   }
 
-  /// Subscribe to Home Assistant state events.
+  /// Get a new receiver for entity state updates.
   ///
-  /// This sends a SubscribeHomeAssistantStatesRequest to the device and returns
-  /// a receiver for HA state events. The device will send events indicating which
-  /// Home Assistant entities it wants to monitor.
-  pub async fn subscribe_home_assistant_states(
-    &self,
-  ) -> Result<broadcast::Receiver<HomeAssistantEvent>> {
+  /// Each call returns an independent receiver that gets all future state messages.
+  /// Call `request_states()` once before subscribing; this method can be called
+  /// multiple times without sending additional requests to the device.
+  pub fn states_receiver(&self) -> Result<broadcast::Receiver<EntityState>> {
     let conn = self.connected()?;
-    let subscription = conn.subscribe_home_assistant_events();
+    Ok(conn.subscribe_states())
+  }
+
+  /// Send a SubscribeHomeAssistantStatesRequest to the device.
+  ///
+  /// Call this once to start receiving HA state events. After calling this,
+  /// use `home_assistant_states_receiver()` to get one or more independent receivers.
+  pub async fn request_home_assistant_states(&self) -> Result<()> {
+    let conn = self.connected()?;
     let message = proto::api::SubscribeHomeAssistantStatesRequest::new();
-    conn.send_message(Box::new(message)).await?;
-    Ok(subscription)
+    conn.send_message(Box::new(message)).await
   }
 
-  /// Subscribe to log events.
+  /// Get a new receiver for Home Assistant state events.
   ///
-  /// This sends a SubscribeLogsRequest to the device and returns a receiver
-  /// for log events. You can specify the minimum log level to receive.
-  pub async fn subscribe_logs(
-    &self,
-    level: proto::api::LogLevel,
-    dump_config: bool,
-  ) -> Result<broadcast::Receiver<LogEvent>> {
+  /// Each call returns an independent receiver. Call `request_home_assistant_states()`
+  /// once before subscribing; this method can be called multiple times without
+  /// sending additional requests to the device.
+  pub fn home_assistant_states_receiver(&self) -> Result<broadcast::Receiver<HomeAssistantEvent>> {
     let conn = self.connected()?;
-    let subscription = conn.subscribe_logs();
+    Ok(conn.subscribe_home_assistant_events())
+  }
+
+  /// Send a SubscribeLogsRequest to the device.
+  ///
+  /// Call this once to start receiving log events. After calling this,
+  /// use `logs_receiver()` to get one or more independent receivers.
+  pub async fn request_logs(&self, level: LogLevel, dump_config: bool) -> Result<()> {
+    let conn = self.connected()?;
     let message = proto::api::SubscribeLogsRequest {
-      level: EnumOrUnknown::new(level),
+      level: EnumOrUnknown::new(level.into()),
       dump_config,
       ..Default::default()
     };
-    conn.send_message(Box::new(message)).await?;
-    Ok(subscription)
+    conn.send_message(Box::new(message)).await
   }
 
-  /// Subscribe to Home Assistant action request events.
+  /// Get a new receiver for log events.
   ///
-  /// This sends a SubscribeHomeassistantServicesRequest to the device and returns
-  /// a receiver for action request events. The device will send events when it wants
-  /// to trigger a Home Assistant service.
-  pub async fn subscribe_home_assistant_action_requests(
+  /// Each call returns an independent receiver. Call `request_logs()` once before
+  /// subscribing; this method can be called multiple times without sending additional
+  /// requests to the device.
+  pub fn logs_receiver(&self) -> Result<broadcast::Receiver<LogEvent>> {
+    let conn = self.connected()?;
+    Ok(conn.subscribe_logs())
+  }
+
+  /// Send a SubscribeHomeassistantServicesRequest to the device.
+  ///
+  /// Call this once to start receiving action request events. After calling this,
+  /// use `home_assistant_action_requests_receiver()` to get one or more independent receivers.
+  pub async fn request_home_assistant_action_requests(&self) -> Result<()> {
+    let conn = self.connected()?;
+    let message = proto::api::SubscribeHomeassistantServicesRequest::new();
+    conn.send_message(Box::new(message)).await
+  }
+
+  /// Get a new receiver for Home Assistant action request events.
+  ///
+  /// Each call returns an independent receiver. Call
+  /// `request_home_assistant_action_requests()` once before subscribing; this method
+  /// can be called multiple times without sending additional requests to the device.
+  pub fn home_assistant_action_requests_receiver(
     &self,
   ) -> Result<broadcast::Receiver<HomeassistantActionRequest>> {
     let conn = self.connected()?;
-    let subscription = conn.subscribe_action_requests();
-    let message = proto::api::SubscribeHomeassistantServicesRequest::new();
-    conn.send_message(Box::new(message)).await?;
-    Ok(subscription)
+    Ok(conn.subscribe_action_requests())
+  }
+
+  /// Get a new receiver for camera image frames.
+  ///
+  /// Camera frames are sent automatically by the device once states are subscribed
+  /// via `request_states()`. Each call returns an independent receiver; call this
+  /// before `request_states()` to avoid missing early frames.
+  pub fn camera_receiver(&self) -> Result<broadcast::Receiver<CameraImage>> {
+    let conn = self.connected()?;
+    Ok(conn.subscribe_camera())
   }
 
   pub async fn switch_command(&self, key: u32, state: bool) -> Result<()> {

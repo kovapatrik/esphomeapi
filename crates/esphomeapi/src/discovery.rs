@@ -1,4 +1,4 @@
-use std::{collections::HashSet, net::IpAddr, time::Duration};
+use std::{collections::HashSet, net::Ipv4Addr, time::Duration};
 
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use tracing::{error, info};
@@ -17,12 +17,8 @@ pub struct ServiceInfo {
 
   pub fullname: String, // <instance>.<service>.<domain>
   pub server: String,   // fully qualified name for service host
-  pub addresses: HashSet<IpAddr>,
+  pub addresses: HashSet<Ipv4Addr>,
   pub port: u16,
-  pub host_ttl: u32,  // used for SRV and Address records
-  pub other_ttl: u32, // used for PTR and TXT records
-  pub priority: u16,
-  pub weight: u16,
 }
 
 pub async fn discover(seconds: u32) -> Result<Vec<ServiceInfo>> {
@@ -45,16 +41,12 @@ pub async fn discover(seconds: u32) -> Result<Vec<ServiceInfo>> {
             found_services.insert(
               info.get_fullname().to_owned(),
               ServiceInfo {
-                ty_domain: info.get_type().to_owned(),
+                ty_domain: info.ty_domain.clone(),
                 sub_domain: info.get_subtype().to_owned(),
                 fullname: info.get_fullname().to_owned(),
                 server: info.get_hostname().to_owned(),
-                addresses: info.get_addresses().clone(),
-                port: info.get_port(),
-                host_ttl: info.get_host_ttl(),
-                other_ttl: info.get_other_ttl(),
-                priority: info.get_priority(),
-                weight: info.get_weight(),
+                addresses: info.get_addresses_v4().clone(),
+                port: info.get_port()
               },
             );
           }

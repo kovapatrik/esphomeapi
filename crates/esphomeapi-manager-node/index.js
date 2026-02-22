@@ -381,4 +381,6 @@ module.exports.Manager = nativeBinding.Manager
 module.exports.Switch = nativeBinding.Switch
 module.exports.ColorMode = nativeBinding.ColorMode
 module.exports.discover = nativeBinding.discover
+module.exports.HomeAssistantEventKind = nativeBinding.HomeAssistantEventKind
 module.exports.initLogger = nativeBinding.initLogger
+module.exports.LogLevel = nativeBinding.LogLevel

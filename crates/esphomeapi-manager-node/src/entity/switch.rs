@@ -41,10 +41,7 @@ impl Switch {
   /// Register a callback that is called whenever the switch state changes.
   ///
   /// The callback receives a single boolean argument indicating whether the switch is on.
-  #[napi(
-    ts_args_type = "callback: (isOn: boolean) => void",
-    ts_return_type = "void"
-  )]
+  #[napi]
   pub fn on_state_change(
     &self,
     callback: ThreadsafeFunction<bool, (), bool, Status, false, true>,

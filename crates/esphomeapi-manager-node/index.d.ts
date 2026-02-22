@@ -18,7 +18,7 @@ export declare class Light {
    *
    * The callback receives a `LightState` object with all current state values.
    */
-  onStateChange(callback: (state: LightState) => void): void
+  onStateChange(callback: ((arg: LightState) => void)): void
   turnOn(): Promise<void>
   turnOff(): Promise<void>
   toggle(): Promise<void>
@@ -30,6 +30,58 @@ export declare class Manager {
   getDeviceName(): string
   getDeviceMac(): string
   getEntities(): Array<Light | Switch>
+  /**
+   * Subscribe to Home Assistant state events.
+   *
+   * Sends the subscription request to the device, then calls `callback` for every
+   * subsequent event. The callback runs on the JS thread via a threadsafe function.
+   *
+   * Call this once per subscription; the callback keeps firing until the connection
+   * closes. If you need a second independent listener, call
+   * `onHomeAssistantState` instead (no extra request is sent).
+   */
+  subscribeHomeAssistantStates(callback: ((arg: HomeAssistantEvent) => void)): Promise<void>
+  /**
+   * Register an additional listener for Home Assistant state events without
+   * sending a new subscription request to the device.
+   *
+   * Use this when `subscribe_home_assistant_states` has already been called
+   * and you need a second independent callback.
+   */
+  onHomeAssistantState(callback: ((arg: HomeAssistantEvent) => void)): void
+  /**
+   * Subscribe to Home Assistant action request events.
+   *
+   * Sends the subscription request to the device, then calls `callback` for every
+   * subsequent action request. Call this once; use `onHomeAssistantActionRequest`
+   * for additional listeners without re-sending the request.
+   */
+  subscribeHomeAssistantActionRequests(callback: ((arg: HomeassistantActionRequest) => void)): Promise<void>
+  /**
+   * Register an additional listener for Home Assistant action requests without
+   * sending a new subscription request to the device.
+   */
+  onHomeAssistantActionRequest(callback: ((arg: HomeassistantActionRequest) => void)): void
+  /**
+   * Subscribe to ESPHome logs.
+   *
+   * Sends the subscription request to the device, then calls `callback` for every
+   * subsequent action request. Call this once; use `onLogs`
+   * for additional listeners without re-sending the request.
+   */
+  subscribeLogs(level: LogLevel, dumpConfig: boolean, callback: ((arg: LogEvent) => void)): Promise<void>
+  /**
+   * Register an additional listener for ESPHome logs without
+   * sending a new subscription request to the device.
+   */
+  onLogs(callback: ((arg: LogEvent) => void)): void
+  /**
+   * Send the current state of a Home Assistant entity to the device.
+   *
+   * Used to respond to a `HomeAssistantEvent` of type `"StateSubscription"` or
+   * `"StateRequest"`, or to push an update when a subscribed entity changes.
+   */
+  sendHomeAssistantState(entityId: string, state: string, attribute?: string | undefined | null): Promise<void>
 }
 
 export declare class Switch {
@@ -41,7 +93,7 @@ export declare class Switch {
    *
    * The callback receives a single boolean argument indicating whether the switch is on.
    */
-  onStateChange(callback: (isOn: boolean) => void): void
+  onStateChange(callback: ((arg: boolean) => void)): void
   turnOn(): Promise<void>
   turnOff(): Promise<void>
   toggle(): Promise<void>
@@ -73,6 +125,34 @@ export interface ConnectionOptions {
 }
 
 export declare function discover(seconds: number): Promise<Array<ServiceInfo>>
+
+export interface HomeassistantActionRequest {
+  service: string
+  isEvent: boolean
+  data: Record<string, string>
+  dataTemplate: Record<string, string>
+  variables: Record<string, string>
+  callId: number
+  wantsResponse: boolean
+  responseTemplate: string
+}
+
+/**
+ * A Home Assistant state event received from the ESPHome device.
+ *
+ * `eventType` is either `"StateSubscription"` (device wants ongoing updates)
+ * or `"StateRequest"` (device wants the current value once).
+ */
+export interface HomeAssistantEvent {
+  eventType: HomeAssistantEventKind
+  entityId: string
+  attribute?: string
+}
+
+export declare const enum HomeAssistantEventKind {
+  StateSubscription = 'StateSubscription',
+  StateRequest = 'StateRequest'
+}
 
 /**
  * Initialize the logger with a console-like object.
@@ -115,6 +195,22 @@ export interface LightState {
   effect: string
 }
 
+export interface LogEvent {
+  level: LogLevel
+  message: string
+}
+
+export declare const enum LogLevel {
+  None = 0,
+  Error = 1,
+  Warn = 2,
+  Info = 3,
+  Config = 4,
+  Debug = 5,
+  Verbose = 6,
+  VeryVerbose = 7
+}
+
 export interface ServiceInfo {
   tyDomain: string
   subDomain?: string
@@ -122,8 +218,4 @@ export interface ServiceInfo {
   server: string
   addresses: Array<string>
   port: number
-  hostTtl: number
-  otherTtl: number
-  priority: number
-  weight: number
 }

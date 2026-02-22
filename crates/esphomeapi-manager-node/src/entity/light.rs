@@ -155,10 +155,7 @@ impl Light {
   /// Register a callback that is called whenever the light state changes.
   ///
   /// The callback receives a `LightState` object with all current state values.
-  #[napi(
-    ts_args_type = "callback: (state: LightState) => void",
-    ts_return_type = "void"
-  )]
+  #[napi]
   pub fn on_state_change(
     &self,
     callback: ThreadsafeFunction<LightState, (), LightState, Status, false, true>,

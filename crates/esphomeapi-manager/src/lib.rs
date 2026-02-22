@@ -12,10 +12,12 @@ use esphomeapi::{
 pub use esphomeapi::{Error, Result};
 
 pub use esphomeapi::discovery::{ServiceInfo, discover};
-use tokio::sync::{broadcast::Receiver, watch};
+pub use esphomeapi::model::{HomeAssistantEvent, HomeassistantActionRequest, LogEvent, LogLevel};
+use tokio::sync::{broadcast, watch};
 use tracing::info;
 
 pub struct Manager {
+  client: Arc<Client>,
   pub device_info: DeviceInfo,
   entities: HashMap<u32, Entity>,
   services: HashMap<u32, UserService>,
@@ -74,10 +76,13 @@ impl Manager {
       services.insert(service.key, service);
     }
 
-    let state_subscriber = client.subscribe_states().await.unwrap();
+    // Send the state subscription request once, then use the receiver for internal routing.
+    client.request_states().await.unwrap();
+    let state_subscriber = client.states_receiver().unwrap();
     Self::spawn_state_update_task(state_senders, state_subscriber);
 
     Self {
+      client,
       device_info,
       entities,
       services,
@@ -88,9 +93,87 @@ impl Manager {
     &self.entities
   }
 
+  /// Get a new receiver for all entity state updates.
+  ///
+  /// Each call returns an independent receiver without sending a new request to the device.
+  /// The subscription request was already sent during `new()`.
+  pub fn states_receiver(&self) -> broadcast::Receiver<EntityState> {
+    self.client.states_receiver().unwrap()
+  }
+
+  /// Subscribe to Home Assistant state events.
+  ///
+  /// Sends the subscription request to the device and returns a receiver. Call this
+  /// once; call `home_assistant_states_receiver()` for additional independent receivers
+  /// without re-sending the request.
+  pub async fn subscribe_home_assistant_states(
+    &self,
+  ) -> Result<broadcast::Receiver<HomeAssistantEvent>> {
+    self.client.request_home_assistant_states().await?;
+    Ok(self.client.home_assistant_states_receiver()?)
+  }
+
+  /// Get a new receiver for Home Assistant state events without re-sending the request.
+  pub fn home_assistant_states_receiver(&self) -> Result<broadcast::Receiver<HomeAssistantEvent>> {
+    self.client.home_assistant_states_receiver()
+  }
+
+  /// Subscribe to Home Assistant action request events.
+  ///
+  /// Sends the subscription request to the device and returns a receiver. Call this
+  /// once; call `home_assistant_action_requests_receiver()` for additional independent
+  /// receivers without re-sending the request.
+  pub async fn subscribe_home_assistant_action_requests(
+    &self,
+  ) -> Result<broadcast::Receiver<HomeassistantActionRequest>> {
+    self.client.request_home_assistant_action_requests().await?;
+    Ok(self.client.home_assistant_action_requests_receiver()?)
+  }
+
+  /// Get a new receiver for Home Assistant action request events without re-sending the request.
+  pub fn home_assistant_action_requests_receiver(
+    &self,
+  ) -> Result<broadcast::Receiver<HomeassistantActionRequest>> {
+    self.client.home_assistant_action_requests_receiver()
+  }
+
+  // Subscribe to ESPHome logs.
+  ///
+  /// Sends the subscription request to the device and returns a receiver. Call this
+  /// once; call `logs_receiver()` for additional independent receivers without re-sending the request.
+  pub async fn subscribe_logs(
+    &self,
+    log_level: LogLevel,
+    dump_config: bool,
+  ) -> Result<broadcast::Receiver<LogEvent>> {
+    self.client.request_logs(log_level, dump_config).await?;
+    Ok(self.client.logs_receiver()?)
+  }
+
+  /// Get a new receiver for ESPHome logs without re-sending the request.
+  pub fn logs_receiver(&self) -> Result<broadcast::Receiver<LogEvent>> {
+    self.client.logs_receiver()
+  }
+
+  /// Send the current state of a Home Assistant entity to the device.
+  ///
+  /// This is used to respond to HomeAssistantEvent::StateRequest or
+  /// to update the device when a subscribed entity changes.
+  pub async fn send_home_assistant_state(
+    &self,
+    entity_id: String,
+    state: String,
+    attribute: Option<String>,
+  ) -> Result<()> {
+    self
+      .client
+      .send_home_assistant_state(entity_id, state, attribute)
+      .await
+  }
+
   fn spawn_state_update_task(
     state_senders: HashMap<u32, watch::Sender<Option<EntityState>>>,
-    mut subscriber: Receiver<EntityState>,
+    mut subscriber: broadcast::Receiver<EntityState>,
   ) {
     tokio::spawn(async move {
       while let Ok(state) = subscriber.recv().await {

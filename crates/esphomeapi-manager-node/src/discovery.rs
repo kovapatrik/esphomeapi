@@ -11,10 +11,6 @@ pub struct ServiceInfo {
   pub server: String,
   pub addresses: Vec<String>,
   pub port: u16,
-  pub host_ttl: u32,
-  pub other_ttl: u32,
-  pub priority: u16,
-  pub weight: u16,
 }
 
 impl From<RustServiceInfo> for ServiceInfo {
@@ -26,10 +22,6 @@ impl From<RustServiceInfo> for ServiceInfo {
       server: value.server,
       addresses: value.addresses.iter().map(|a| a.to_string()).collect(),
       port: value.port,
-      host_ttl: value.host_ttl,
-      other_ttl: value.other_ttl,
-      priority: value.priority,
-      weight: value.weight,
     }
   }
 }
