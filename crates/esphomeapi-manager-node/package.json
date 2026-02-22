@@ -1,7 +1,7 @@
 {
   "name": "@kovapatrik/esphomeapi-manager",
   "repository": {
-    "url": "https://github.com/kovapatrik/esphomeapi"
+    "url": "git+https://github.com/kovapatrik/esphomeapi.git"
   },
   "version": "0.2.0",
   "main": "index.js",
@@ -39,7 +39,7 @@
     "build": "pnpm exec napi build --platform --release --no-dts-cache",
     "build:debug": "pnpm exec napi build --platform",
     "create-npm-dirs": "pnpm exec napi create-npm-dirs",
-    "prepublishOnly": "pnpm exec napi prepublish -t npm",
+    "prepublishOnly": "pnpm exec napi prepublish -t npm --no-gh-release",
     "test": "pnpm exec ava",
     "version": "pnpm exec napi version"
   }

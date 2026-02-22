@@ -63,4 +63,37 @@ esphomeapi              (Layer 1 - Core protocol)
 
 ### npm Publishing
 
-The CI matrix builds native `.node` binaries for 10 target architectures and publishes them as separate npm packages under the `@kovapatrik/` scope. The root package acts as an orchestrator. Published on git tags matching semver (releases) or semver with suffix (beta).
+Native `.node` binaries are built for 11 target architectures and published as separate npm packages under the `@kovapatrik/` scope. The root package acts as an orchestrator.
+
+Publishing uses [npm trusted publishers](https://docs.npmjs.com/trusted-publishers) (OIDC) — no `NPM_TOKEN` secret is required. The `id-token: write` permission in the workflow lets GitHub issue a short-lived token that npm verifies. **One-time setup:** configure a trusted publisher for each `@kovapatrik/` npm package on npmjs.com pointing to `release.yml` in this repository.
+
+## CI / Release Workflows
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `ci.yml` | push to `main`, PRs | Lint + native debug build |
+| `release-please.yml` | push to `main` | Opens/updates release PRs; bumps version + changelog; pushes tag on merge |
+| `release.yml` | GitHub release published / manual | Builds all 11 targets, publishes to npm |
+
+### Stable release flow
+
+1. Merge PRs using [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `chore:`, etc.)
+2. `release-please` auto-opens a release PR that bumps `package.json` and writes `CHANGELOG.md`
+3. Review and merge the release PR
+4. `release-please` creates a GitHub Release with a `v*.*.*` tag
+5. `release.yml` triggers → builds all 11 targets → publishes to npm
+
+### Beta release flow
+
+1. Go to **Actions → Release → Run workflow**
+2. Enter the desired dist-tag (`beta`, `alpha`, `next`, etc.)
+3. Builds all 11 targets and publishes under that tag
+
+### Conventional Commits → version bumps
+
+| Commit prefix | Version bump |
+|---|---|
+| `fix:` | patch |
+| `feat:` | minor |
+| `feat!:` or `BREAKING CHANGE:` | major |
+| `chore:`, `docs:`, `refactor:` | no release |

@@ -5,7 +5,7 @@
   "description": "A Node.js native addon for ESPHome API",
   "author": "Patrik Kovalovszky <kovapatrik@gmail.com>",
   "repository": {
-    "url": "https://github.com/kovapatrik/esphomeapi"
+    "url": "git+https://github.com/kovapatrik/esphomeapi.git"
   },
   "license": "MIT",
   "private": true,

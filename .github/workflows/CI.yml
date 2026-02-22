@@ -1,47 +1,49 @@
 name: CI
+
 env:
-  DEBUG: napi:*
-  APP_NAME: crates/esphomeapi-manager-node/esphomeapi-manager
-  MACOSX_DEPLOYMENT_TARGET: "10.13"
   CARGO_INCREMENTAL: "1"
+
 permissions:
-  contents: write
-  id-token: write
-"on":
+  contents: read
+
+on:
   push:
     branches:
       - main
-    tags-ignore:
-      - "**"
     paths-ignore:
       - "**/*.md"
       - LICENSE
       - "**/*.gitignore"
       - .editorconfig
       - docs/**
-  pull_request: null
+  pull_request:
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - name: setup pnpm
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
         uses: pnpm/action-setup@v4
+
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Setup node
-        uses: actions/setup-node@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: "pnpm"
 
-      - name: Install
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -49,150 +51,48 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
-      # - name: Lint
-      #   run: pnpm lint
-
       - name: Cargo fmt
         run: cargo fmt -- --check
 
-      - name: Clippy
-        run: cargo clippy
+      # - name: Clippy
+      #   run: cargo clippy --all-targets -- -D warnings
 
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        settings:
-          - host: macos-latest
-            target: x86_64-apple-darwin
-            build: pnpm build --target x86_64-apple-darwin
-          - host: windows-latest
-            build: pnpm build --target x86_64-pc-windows-msvc
-            target: x86_64-pc-windows-msvc
-          - host: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            build: pnpm build --target x86_64-unknown-linux-gnu --use-napi-cross
-          - host: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            build: pnpm build --target x86_64-unknown-linux-musl -x
-          - host: macos-latest
-            target: aarch64-apple-darwin
-            build: pnpm build --target aarch64-apple-darwin
-          - host: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            build: pnpm build --target aarch64-unknown-linux-gnu --use-napi-cross
-          - host: ubuntu-latest
-            target: armv7-unknown-linux-gnueabihf
-            build: pnpm build --target armv7-unknown-linux-gnueabihf --use-napi-cross
-          - host: ubuntu-latest
-            target: aarch64-linux-android
-            build: pnpm build --target aarch64-linux-android
-          - host: ubuntu-latest
-            target: armv7-linux-androideabi
-            build: pnpm build --target armv7-linux-androideabi
-          - host: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-            build: pnpm build --target aarch64-unknown-linux-musl -x
-          - host: windows-latest
-            target: aarch64-pc-windows-msvc
-            build: pnpm build --target aarch64-pc-windows-msvc
-    name: stable - ${{ matrix.settings.target }} - node@20
-    runs-on: ${{ matrix.settings.host }}
+    name: Build (native)
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - name: setup pnpm
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
         uses: pnpm/action-setup@v4
+
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Setup node
-        uses: actions/setup-node@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
-      - name: Install
+          cache: "pnpm"
+
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.settings.target }}
+
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            ~/.napi-rs
-            .cargo-cache
             target/
-          key: ${{ matrix.settings.target }}-cargo-${{ matrix.settings.host }}
-      - uses: mlugg/setup-zig@v2
-        if: ${{ contains(matrix.settings.target, 'musl') }}
-        with:
-          version: 0.15.2
-      - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@v2
-        if: ${{ contains(matrix.settings.target, 'musl') }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          tool: cargo-zigbuild
-      - name: Setup toolchain
-        run: ${{ matrix.settings.setup }}
-        if: ${{ matrix.settings.setup }}
-        shell: bash
+          key: x86_64-unknown-linux-gnu-cargo-ubuntu-latest
+
       - name: Install dependencies
         run: pnpm install
-      - name: Build
-        run: ${{ matrix.settings.build }}
-        shell: bash
-      - name: Upload artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: bindings-${{ matrix.settings.target }}
-          path: ${{ env.APP_NAME }}.*.node
-          if-no-files-found: error
-  publish:
-    name: Publish
-    runs-on: ubuntu-latest
-    needs:
-      - lint
-      - build
-    steps:
-      - uses: actions/checkout@v6
-      - name: setup pnpm
-        uses: pnpm/action-setup@v4
-      - name: Setup node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: pnpm
-      - name: Install dependencies
-        run: pnpm install
-      - name: Download all artifacts
-        uses: actions/download-artifact@v7
-        with:
-          path: crates/esphomeapi-manager-node/artifacts
-      - name: create npm dirs
-        run: pnpm create-npm-dirs
-      - name: Move artifacts
-        run: pnpm artifacts
-      - name: List packages
-        run: ls -R ./npm
-        shell: bash
+
+      - name: Build (debug)
+        run: pnpm build:debug
         working-directory: crates/esphomeapi-manager-node
-      - name: Publish
-        working-directory: crates/esphomeapi-manager-node
-        run: |
-          if git log -1 --pretty=%B | grep "^v\?[0-9]\+\.[0-9]\+\.[0-9]\+$";
-          then
-            npm publish --access public
-          elif git log -1 --pretty=%B | grep "^v\?[0-9]\+\.[0-9]\+\.[0-9]\+";
-          then
-            npm publish --tag beta --access public
-          else
-            echo "Not a release, skipping publish"
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

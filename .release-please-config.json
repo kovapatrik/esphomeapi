@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    "crates/esphomeapi-manager-node": {
+      "release-type": "node",
+      "package-name": "@kovapatrik/esphomeapi-manager",
+      "include-component-in-tag": false,
+      "tag-name": "v${version}"
+    }
+  }
+}
