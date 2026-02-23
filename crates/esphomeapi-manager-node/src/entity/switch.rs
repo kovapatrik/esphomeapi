@@ -4,32 +4,31 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
+use crate::entity::EntityKind;
+
 #[napi]
 #[derive(Clone)]
 pub struct Switch {
   inner: RustSwitch,
+  pub key: u32,
+  pub name: String,
+  #[napi(ts_type = "EntityKind.Switch")]
+  pub kind: EntityKind,
 }
 
 impl Switch {
   pub fn new(rust_switch: &RustSwitch) -> Self {
     Switch {
       inner: rust_switch.clone(),
+      key: rust_switch.key(),
+      name: rust_switch.name().to_string(),
+      kind: EntityKind::Switch,
     }
   }
 }
 
 #[napi]
 impl Switch {
-  #[napi(getter)]
-  pub fn key(&self) -> u32 {
-    self.inner.key()
-  }
-
-  #[napi(getter)]
-  pub fn name(&self) -> String {
-    self.inner.name().to_string()
-  }
-
   #[napi(getter)]
   pub fn is_on(&self) -> Result<bool> {
     match self.inner.get_state() {

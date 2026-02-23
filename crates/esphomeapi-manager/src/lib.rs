@@ -3,10 +3,10 @@ use std::{collections::HashMap, sync::Arc};
 pub mod entity;
 
 use entity::Entity;
-pub use esphomeapi::model::EntityState;
+pub use esphomeapi::model::{DeviceInfo, EntityState};
 use esphomeapi::{
   Client,
-  model::{DeviceInfo, EntityInfo, UserService},
+  model::{EntityInfo, UserService},
 };
 
 pub use esphomeapi::{Error, Result};

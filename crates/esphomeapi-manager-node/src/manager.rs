@@ -6,8 +6,10 @@ use napi::tokio::sync::broadcast::error::RecvError;
 use napi_derive::napi;
 use tracing::warn;
 
-use crate::entity;
-use crate::model::{HomeAssistantEvent, HomeassistantActionRequest, LogEvent, LogLevel};
+use crate::entity::{self, Entity};
+use crate::model::{
+  DeviceInfo, HomeAssistantEvent, HomeassistantActionRequest, LogEvent, LogLevel,
+};
 
 #[napi(object)]
 pub struct ConnectionOptions {
@@ -23,6 +25,8 @@ pub struct ConnectionOptions {
 #[napi]
 pub struct Manager {
   inner: RustManager,
+  device_info: DeviceInfo,
+  entities: Vec<Entity>,
 }
 
 #[napi]
@@ -40,23 +44,7 @@ impl Manager {
     )
     .await;
 
-    Ok(Manager { inner: manager })
-  }
-
-  #[napi]
-  pub fn get_device_name(&self) -> String {
-    self.inner.device_info.name.clone()
-  }
-
-  #[napi]
-  pub fn get_device_mac(&self) -> String {
-    self.inner.device_info.mac_address.clone()
-  }
-
-  #[napi]
-  pub fn get_entities(&self) -> Vec<Either<entity::Light, entity::Switch>> {
-    self
-      .inner
+    let entities = manager
       .get_entities()
       .values()
       .filter_map(|e| match e {
@@ -64,7 +52,25 @@ impl Manager {
         esphomeapi_manager::entity::Entity::Switch(s) => Some(Either::B(entity::Switch::new(s))),
         _ => None,
       })
-      .collect()
+      .collect();
+
+    let device_info = manager.device_info.clone().into();
+
+    Ok(Manager {
+      inner: manager,
+      device_info: device_info,
+      entities: entities,
+    })
+  }
+
+  #[napi]
+  pub fn get_device_info(&self) -> DeviceInfo {
+    self.device_info.clone()
+  }
+
+  #[napi]
+  pub fn get_entities(&self) -> Vec<Entity> {
+    self.entities.clone()
   }
 
   /// Subscribe to Home Assistant state events.

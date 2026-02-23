@@ -4,6 +4,7 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
+use crate::entity::EntityKind;
 use crate::model::ColorMode;
 
 #[napi(object)]
@@ -42,28 +43,25 @@ pub struct LightState {
 #[derive(Clone)]
 pub struct Light {
   inner: RustLight,
+  pub key: u32,
+  pub name: String,
+  #[napi(ts_type = "EntityKind.Light")]
+  pub kind: EntityKind,
 }
 
 impl Light {
   pub fn new(rust_light: &RustLight) -> Self {
     Light {
       inner: rust_light.clone(),
+      key: rust_light.key(),
+      name: rust_light.name().to_string(),
+      kind: EntityKind::Light,
     }
   }
 }
 
 #[napi]
 impl Light {
-  #[napi(getter)]
-  pub fn key(&self) -> u32 {
-    self.inner.key()
-  }
-
-  #[napi(getter)]
-  pub fn name(&self) -> String {
-    self.inner.name().to_string()
-  }
-
   #[napi(getter)]
   pub fn is_on(&self) -> Result<bool> {
     self
