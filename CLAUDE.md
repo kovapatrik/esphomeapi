@@ -65,7 +65,11 @@ esphomeapi              (Layer 1 - Core protocol)
 
 Native `.node` binaries are built for 11 target architectures and published as separate npm packages under the `@kovapatrik/` scope. The root package acts as an orchestrator.
 
-Publishing uses [npm trusted publishers](https://docs.npmjs.com/trusted-publishers) (OIDC) — no `NPM_TOKEN` secret is required. The `id-token: write` permission in the workflow lets GitHub issue a short-lived token that npm verifies. **One-time setup:** configure a trusted publisher for each `@kovapatrik/` npm package on npmjs.com pointing to `release.yml` in this repository.
+Publishing uses [npm trusted publishers](https://docs.npmjs.com/trusted-publishers) (OIDC). The `id-token: write` permission in `release.yml` lets GitHub issue a short-lived OIDC token that npm verifies. Trusted publisher must be configured for each `@kovapatrik/` npm package on npmjs.com pointing to `release.yml`.
+
+Two secrets are required:
+- **`RELEASE_TOKEN`** — fine-grained PAT with `Contents: Read & Write` and `Pull requests: Read & Write`. Used by `release-please` so that the GitHub Release it creates triggers `release.yml`. Releases created with `GITHUB_TOKEN` do not trigger other workflows (GitHub limitation).
+- **`NPM_TOKEN`** — npm token for publishing. Passed as `NODE_AUTH_TOKEN` to the publish step.
 
 ## CI / Release Workflows
 

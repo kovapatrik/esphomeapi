@@ -5,9 +5,9 @@ on:
     branches:
       - main
 
-permissions:
-  contents: write
-  pull-requests: write
+# Intentionally no permissions block — we use RELEASE_TOKEN (a PAT) so that
+# releases created by this workflow trigger release.yml. Releases created with
+# GITHUB_TOKEN do not trigger other workflows (GitHub limitation).
 
 jobs:
   release-please:
@@ -17,3 +17,4 @@ jobs:
         with:
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
+          token: ${{ secrets.RELEASE_TOKEN }}
