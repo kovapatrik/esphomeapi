@@ -82,6 +82,18 @@ export declare class Manager {
    * `"StateRequest"`, or to push an update when a subscribed entity changes.
    */
   sendHomeAssistantState(entityId: string, state: string, attribute?: string | undefined | null): Promise<void>
+  /**
+   * Returns a Promise that resolves when the device initiates a disconnect.
+   *
+   * Use this to react to device restarts or OTA updates. The Manager is not
+   * automatically reconnected; construct a new `Manager` to reconnect.
+   *
+   * ```ts
+   * await Promise.race([manager.onDeviceDisconnect(), doWork(manager)])
+   * ```
+   */
+  onDeviceDisconnect(): Promise<void>
+  disconnect(): Promise<void>
 }
 
 export declare class Switch {

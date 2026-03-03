@@ -96,3 +96,6 @@ jobs:
       - name: Build (debug)
         run: pnpm build:debug
         working-directory: crates/esphomeapi-manager-node
+
+      - name: Check generated files are committed
+        run: git diff --exit-code
