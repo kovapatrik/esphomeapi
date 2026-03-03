@@ -20,6 +20,10 @@ on:
         required: true
         default: "beta"
         type: string
+      version:
+        description: "Version to publish (e.g. 0.3.0-beta.1). Defaults to version in package.json."
+        required: false
+        type: string
 
 jobs:
   build:
@@ -159,6 +163,11 @@ jobs:
 
       - name: Create npm dirs
         run: pnpm create-npm-dirs
+
+      - name: Set version
+        if: ${{ inputs.version != '' }}
+        run: npm version --no-git-tag-version ${{ inputs.version }}
+        working-directory: crates/esphomeapi-manager-node
 
       - name: Move artifacts
         run: pnpm artifacts

@@ -5,7 +5,7 @@ pub mod entity;
 use entity::Entity;
 pub use esphomeapi::model::{DeviceInfo, EntityState};
 use esphomeapi::{
-  Client,
+  Client, CommandHandle,
   model::{EntityInfo, UserService},
 };
 
@@ -17,10 +17,12 @@ use tokio::sync::{broadcast, watch};
 use tracing::info;
 
 pub struct Manager {
-  client: Arc<Client>,
+  client: Client,
+  command_handle: Arc<CommandHandle>,
   pub device_info: DeviceInfo,
   entities: HashMap<u32, Entity>,
   services: HashMap<u32, UserService>,
+  disconnect_tx: broadcast::Sender<()>,
 }
 
 impl Manager {
@@ -47,7 +49,7 @@ impl Manager {
     let device_info = client.device_info().await.unwrap();
     let (entities_response, services_response) = client.list_entities_services().await.unwrap();
 
-    let client = Arc::new(client);
+    let command_handle = Arc::new(client.command_handle().unwrap());
 
     // Create a watch channel per entity and build entity map
     let mut state_senders: HashMap<u32, watch::Sender<Option<EntityState>>> = HashMap::new();
@@ -58,13 +60,13 @@ impl Manager {
         EntityInfo::Light(info) => {
           let (tx, rx) = watch::channel(None);
           state_senders.insert(info.entity_info.key, tx);
-          let entity = entity::Light::new(client.clone(), info.clone(), rx);
+          let entity = entity::Light::new(Arc::clone(&command_handle), info.clone(), rx);
           entities.insert(info.entity_info.key, Entity::Light(entity));
         }
         EntityInfo::Switch(info) => {
           let (tx, rx) = watch::channel(None);
           state_senders.insert(info.entity_info.key, tx);
-          let entity = entity::Switch::new(client.clone(), info.clone(), rx);
+          let entity = entity::Switch::new(Arc::clone(&command_handle), info.clone(), rx);
           entities.insert(info.entity_info.key, Entity::Switch(entity));
         }
         _ => {}
@@ -81,16 +83,37 @@ impl Manager {
     let state_subscriber = client.states_receiver().unwrap();
     Self::spawn_state_update_task(state_senders, state_subscriber);
 
+    // Internally handle device-initiated disconnects. Takes the one-shot receiver
+    // so no &mut Client reference is needed inside the task.
+    let (disconnect_tx, _) = broadcast::channel(1);
+    if let Some(rx) = client.take_device_disconnect_receiver() {
+      let tx = disconnect_tx.clone();
+      tokio::spawn(async move {
+        let _ = rx.await;
+        let _ = tx.send(());
+      });
+    }
+
     Self {
       client,
+      command_handle,
       device_info,
       entities,
       services,
+      disconnect_tx,
     }
   }
 
   pub fn get_entities(&self) -> &HashMap<u32, Entity> {
     &self.entities
+  }
+
+  /// Subscribe to device-initiated disconnect events.
+  ///
+  /// The receiver resolves with `Ok(())` when the device sends a `DisconnectRequest`.
+  /// The manager does not automatically reconnect; construct a new `Manager` to reconnect.
+  pub fn on_device_disconnect(&self) -> broadcast::Receiver<()> {
+    self.disconnect_tx.subscribe()
   }
 
   /// Get a new receiver for all entity state updates.
@@ -169,6 +192,11 @@ impl Manager {
       .client
       .send_home_assistant_state(entity_id, state, attribute)
       .await
+  }
+
+  /// Disconnect from the device.
+  pub async fn disconnect(&mut self) -> Result<()> {
+    self.client.disconnect().await
   }
 
   fn spawn_state_update_task(

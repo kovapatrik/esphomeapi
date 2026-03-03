@@ -6,10 +6,11 @@ use std::time::Duration;
 use bytes::BytesMut;
 use codec::{EspHomeDecoder, EspHomeEncoder, EspHomeHandshake, HandshakeResult};
 use protobuf::Message as _;
-use router::{MessageRouter, RouterConfig, RouterHandle};
+pub(crate) use router::RouterHandle;
+use router::{MessageRouter, RouterConfig};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, BufReader, BufWriter};
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
@@ -32,6 +33,8 @@ pub struct Connected {
   router_task: JoinHandle<()>,
   reader_task: JoinHandle<()>,
   keep_alive_task: JoinHandle<()>,
+  /// Resolves when the device initiates a disconnect (sends DisconnectRequest).
+  device_disconnect_rx: Option<oneshot::Receiver<()>>,
 }
 
 impl Drop for Connected {
@@ -119,7 +122,7 @@ impl Connection<Disconnected> {
 
     // Create the message router
     let framed_writer = FramedWrite::new(writer, encoder);
-    let (router, router_handle) =
+    let (router, router_handle, device_disconnect_rx) =
       MessageRouter::new(message_rx, framed_writer, RouterConfig::default());
 
     // Spawn router task
@@ -141,6 +144,7 @@ impl Connection<Disconnected> {
         router_task,
         reader_task,
         keep_alive_task,
+        device_disconnect_rx: Some(device_disconnect_rx),
       },
     })
   }
@@ -283,6 +287,22 @@ impl Connection<Connected> {
     &self.state.router_handle
   }
 
+  /// Create a cloneable command handle for sending device commands.
+  ///
+  /// The returned handle is cheap to clone and can be shared across tasks or
+  /// entity objects without requiring mutable access to the connection.
+  pub fn command_handle(&self) -> crate::CommandHandle {
+    crate::CommandHandle::new(self.state.router_handle.clone())
+  }
+
+  /// Take the one-shot receiver that fires when the device initiates a disconnect.
+  ///
+  /// Returns `None` if already taken. Intended for passing into a background
+  /// task so the caller does not need to hold a `&mut Connection`.
+  pub(crate) fn take_device_disconnect_rx(&mut self) -> Option<oneshot::Receiver<()>> {
+    self.state.device_disconnect_rx.take()
+  }
+
   /// Send a message without waiting for a response
   pub async fn send_message(&self, message: Box<dyn protobuf::MessageDyn>) -> Result<()> {
     let protobuf_type = message
@@ -408,16 +428,40 @@ impl Connection<Connected> {
 
   /// Disconnect from the device
   ///
-  /// Consumes the connected connection and returns a disconnected one.
+  /// Sends `DisconnectRequest` and waits up to 5 s for `DisconnectResponse`
+  /// before tearing down the connection.  Consumes the connected connection
+  /// and returns a disconnected one.
   pub async fn disconnect(self) -> Result<Connection<Disconnected>> {
-    // Send disconnect request (best effort)
     let disconnect = proto::api::DisconnectRequest::default();
     let msg = ProtobufMessage {
       protobuf_type: proto::api::DisconnectRequest::get_option_id(),
       protobuf_data: disconnect.write_to_bytes()?,
     };
-    let _ = self.router().send(msg).await;
+    // Wait for DisconnectResponse; ignore timeout/errors — we're tearing down anyway.
+    let _ = timeout(
+      Duration::from_secs(5),
+      self
+        .router()
+        .send_await_response(msg, proto::api::DisconnectResponse::get_option_id()),
+    )
+    .await;
 
+    // Tasks are aborted when `self.state` (Connected) is dropped
+    Ok(Connection {
+      config: self.config,
+      state: Disconnected,
+    })
+  }
+
+  /// Wait for the device to initiate a disconnect.
+  ///
+  /// Blocks until the device sends a `DisconnectRequest`, at which point
+  /// this client has already replied with `DisconnectResponse`.  Consumes
+  /// the connected connection and returns a disconnected one.
+  pub async fn wait_for_device_disconnect(mut self) -> Result<Connection<Disconnected>> {
+    if let Some(rx) = self.state.device_disconnect_rx.take() {
+      let _ = rx.await;
+    }
     // Tasks are aborted when `self.state` (Connected) is dropped
     Ok(Connection {
       config: self.config,

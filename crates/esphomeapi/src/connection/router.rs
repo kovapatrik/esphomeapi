@@ -183,6 +183,9 @@ pub struct MessageRouter {
   // Pending request tracking
   pending_single: Option<PendingRequest>,
   pending_multi: Option<PendingMultiRequest>,
+
+  // Signals when the device initiates a disconnect
+  device_disconnect_tx: Option<oneshot::Sender<()>>,
 }
 
 impl MessageRouter {
@@ -190,7 +193,7 @@ impl MessageRouter {
     message_rx: mpsc::Receiver<ProtobufMessage>,
     writer: FramedWrite<BufWriter<OwnedWriteHalf>, EspHomeEncoder>,
     config: RouterConfig,
-  ) -> (Self, RouterHandle) {
+  ) -> (Self, RouterHandle, oneshot::Receiver<()>) {
     let (state_tx, _) = broadcast::channel(config.state_channel_capacity);
     let (ha_event_tx, _) = broadcast::channel(config.ha_event_channel_capacity);
     let (log_tx, _) = broadcast::channel(config.log_channel_capacity);
@@ -198,6 +201,7 @@ impl MessageRouter {
     let (camera_tx, _) = broadcast::channel(config.camera_channel_capacity);
 
     let (command_tx, command_rx) = mpsc::channel(32);
+    let (device_disconnect_tx, device_disconnect_rx) = oneshot::channel();
 
     let subscriptions = SubscriptionHandles {
       state_tx: state_tx.clone(),
@@ -218,6 +222,7 @@ impl MessageRouter {
       camera_tx,
       pending_single: None,
       pending_multi: None,
+      device_disconnect_tx: Some(device_disconnect_tx),
     };
 
     let handle = RouterHandle {
@@ -225,7 +230,7 @@ impl MessageRouter {
       subscriptions,
     };
 
-    (router, handle)
+    (router, handle, device_disconnect_rx)
   }
 
   /// Run the message router event loop
@@ -234,7 +239,9 @@ impl MessageRouter {
       tokio::select! {
         // Handle incoming messages from the device
         Some(message) = self.message_rx.recv() => {
-          self.handle_incoming_message(message).await;
+          if !self.handle_incoming_message(message).await {
+            break;
+          }
         }
 
         // Handle commands from the RouterHandle
@@ -250,7 +257,8 @@ impl MessageRouter {
     }
   }
 
-  async fn handle_incoming_message(&mut self, message: ProtobufMessage) {
+  /// Returns `false` when the router loop should exit (device-initiated disconnect).
+  async fn handle_incoming_message(&mut self, message: ProtobufMessage) -> bool {
     let msg_type = message.protobuf_type;
 
     // Check if this is a request from the device (PingRequest, GetTimeRequest, DisconnectRequest)
@@ -258,10 +266,11 @@ impl MessageRouter {
       || msg_type == proto::api::GetTimeRequest::get_option_id()
       || msg_type == proto::api::DisconnectRequest::get_option_id()
     {
-      self.handle_device_request(message).await;
+      self.handle_device_request(message).await
     } else {
       // Otherwise treat it as a response/push
       self.route_response(message).await;
+      true
     }
   }
 
@@ -351,14 +360,15 @@ impl MessageRouter {
     }
   }
 
-  async fn handle_device_request(&mut self, message: ProtobufMessage) {
+  /// Returns `false` when the router loop should exit (device-initiated disconnect).
+  async fn handle_device_request(&mut self, message: ProtobufMessage) -> bool {
     let msg_type = message.protobuf_type;
 
     // Handle PingRequest
     if msg_type == proto::api::PingRequest::get_option_id() {
       let response = proto::api::PingResponse::default();
       self.send_proto_message(&response).await;
-      return;
+      return true;
     }
 
     // Handle GetTimeRequest
@@ -369,16 +379,20 @@ impl MessageRouter {
         .unwrap()
         .as_secs() as u32;
       self.send_proto_message(&response).await;
-      return;
+      return true;
     }
 
-    // Handle DisconnectRequest
+    // Handle DisconnectRequest (device-initiated)
     if msg_type == proto::api::DisconnectRequest::get_option_id() {
       let response = proto::api::DisconnectResponse::default();
       self.send_proto_message(&response).await;
-      // TODO: Signal connection to close
-      return;
+      if let Some(tx) = self.device_disconnect_tx.take() {
+        let _ = tx.send(());
+      }
+      return false; // exit the router loop
     }
+
+    true
   }
 
   async fn handle_command(&mut self, command: RouterCommand) {

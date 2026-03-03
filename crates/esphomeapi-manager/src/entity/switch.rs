@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use esphomeapi::{
-  Client,
+  CommandHandle,
   model::{EntityState, SwitchInfo, SwitchState},
 };
 use tokio::sync::watch;
@@ -10,14 +10,14 @@ use super::{BaseEntity, StateError, StateResult};
 
 #[derive(Clone)]
 pub struct Switch {
-  client: Arc<Client>,
+  client: Arc<CommandHandle>,
   info: SwitchInfo,
   state: watch::Receiver<Option<EntityState>>,
 }
 
 impl Switch {
   pub fn new(
-    client: Arc<Client>,
+    client: Arc<CommandHandle>,
     info: SwitchInfo,
     state: watch::Receiver<Option<EntityState>>,
   ) -> Self {

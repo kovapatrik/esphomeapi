@@ -310,4 +310,29 @@ impl Manager {
       .await
       .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
   }
+
+  /// Returns a Promise that resolves when the device initiates a disconnect.
+  ///
+  /// Use this to react to device restarts or OTA updates. The Manager is not
+  /// automatically reconnected; construct a new `Manager` to reconnect.
+  ///
+  /// ```ts
+  /// await Promise.race([manager.onDeviceDisconnect(), doWork(manager)])
+  /// ```
+  #[napi]
+  pub async fn on_device_disconnect(&self) -> Result<()> {
+    let mut rx = self.inner.on_device_disconnect();
+    rx.recv()
+      .await
+      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+  }
+
+  #[napi]
+  pub async unsafe fn disconnect(&mut self) -> Result<()> {
+    self
+      .inner
+      .disconnect()
+      .await
+      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+  }
 }

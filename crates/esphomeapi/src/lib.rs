@@ -5,12 +5,14 @@ mod proto {
 pub use proto::api;
 
 mod client;
+mod command_handle;
 mod connection;
 pub mod discovery;
 pub mod model;
 mod utils;
 
 pub use client::Client;
+pub use command_handle::CommandHandle;
 pub use connection::{Connected, Connection, Disconnected};
 pub use utils::Options;
 

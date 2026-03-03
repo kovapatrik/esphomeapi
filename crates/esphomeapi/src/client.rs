@@ -1,5 +1,5 @@
-use protobuf::{EnumOrUnknown, Message};
-use tokio::sync::broadcast;
+use protobuf::{EnumOrUnknown, Message as _};
+use tokio::sync::{broadcast, oneshot};
 
 use crate::{
   connection::{Connected, Connection, Disconnected},
@@ -12,7 +12,7 @@ use crate::{
 };
 use std::time::Duration;
 
-use crate::{proto, Result};
+use crate::{proto, CommandHandle, Result};
 
 /// Internal enum to wrap both connection states
 enum ConnectionState {
@@ -69,6 +69,31 @@ impl Client {
     }
   }
 
+  /// Wait for the ESPHome device to initiate a disconnect.
+  ///
+  /// Blocks until the device sends `DisconnectRequest`.  At that point the
+  /// router has already replied with `DisconnectResponse` and all tasks are
+  /// torn down.  The client transitions to disconnected state so it can be
+  /// reconnected later.
+  pub async fn wait_for_device_disconnect(&mut self) -> Result<()> {
+    let conn = self
+      .connection
+      .take()
+      .ok_or("Connection state is invalid")?;
+
+    match conn {
+      ConnectionState::Connected(c) => {
+        let disconnected = c.wait_for_device_disconnect().await?;
+        self.connection = Some(ConnectionState::Disconnected(disconnected));
+        Ok(())
+      }
+      ConnectionState::Disconnected(c) => {
+        self.connection = Some(ConnectionState::Disconnected(c));
+        Err("Not connected".into())
+      }
+    }
+  }
+
   /// Disconnect from the ESPHome device
   pub async fn disconnect(&mut self) -> Result<()> {
     let conn = self
@@ -93,6 +118,26 @@ impl Client {
   /// Check if connected
   pub fn is_connected(&self) -> bool {
     matches!(self.connection, Some(ConnectionState::Connected(_)))
+  }
+
+  /// Return a cloneable handle for sending device commands.
+  ///
+  /// The handle is cheap to clone and holds only a reference to the
+  /// message router, so it does not prevent `disconnect()` from being called.
+  pub fn command_handle(&self) -> Result<CommandHandle> {
+    Ok(self.connected()?.command_handle())
+  }
+
+  /// Take the one-shot receiver that resolves when the device initiates a disconnect.
+  ///
+  /// Returns `None` if not connected or already taken.  Pass the receiver into a
+  /// background task to react to device-initiated disconnects without holding a
+  /// `&mut Client` reference inside the task.
+  pub fn take_device_disconnect_receiver(&mut self) -> Option<oneshot::Receiver<()>> {
+    match &mut self.connection {
+      Some(ConnectionState::Connected(c)) => c.take_device_disconnect_rx(),
+      _ => None,
+    }
   }
 
   /// Get a reference to the connected connection, or return an error
@@ -253,15 +298,11 @@ impl Client {
   }
 
   pub async fn switch_command(&self, key: u32, state: bool) -> Result<()> {
-    let conn = self.connected()?;
-    let message = proto::api::SwitchCommandRequest {
-      key,
-      state,
-      ..Default::default()
-    };
-
-    conn.send_message(Box::new(message)).await?;
-    Ok(())
+    self
+      .connected()?
+      .command_handle()
+      .switch_command(key, state)
+      .await
   }
 
   pub async fn light_command(
@@ -280,40 +321,25 @@ impl Client {
     flash_length: Option<f32>,
     effect: Option<String>,
   ) -> Result<()> {
-    let conn = self.connected()?;
-    let message = proto::api::LightCommandRequest {
-      key,
-      has_state: state.is_some(),
-      state: state.unwrap_or_default(),
-      has_brightness: brightness.is_some(),
-      brightness: brightness.unwrap_or_default(),
-      has_color_mode: color_mode.is_some(),
-      color_mode: EnumOrUnknown::new(color_mode.unwrap_or_default().into()),
-      has_color_brightness: color_brightness.is_some(),
-      color_brightness: color_brightness.unwrap_or_default(),
-      has_rgb: rgb.is_some(),
-      red: rgb.unwrap_or_default().0,
-      green: rgb.unwrap_or_default().1,
-      blue: rgb.unwrap_or_default().2,
-      has_white: white.is_some(),
-      white: white.unwrap_or_default(),
-      has_color_temperature: color_temperature.is_some(),
-      color_temperature: color_temperature.unwrap_or_default(),
-      has_cold_white: cold_white.is_some(),
-      cold_white: cold_white.unwrap_or_default(),
-      has_warm_white: warm_white.is_some(),
-      warm_white: warm_white.unwrap_or_default(),
-      has_transition_length: transition_length.is_some(),
-      transition_length: (transition_length.unwrap_or_default() * 1000.0).round() as u32,
-      has_flash_length: flash_length.is_some(),
-      flash_length: (flash_length.unwrap_or_default() * 1000.0).round() as u32,
-      has_effect: effect.is_some(),
-      effect: effect.unwrap_or_default(),
-      ..Default::default()
-    };
-
-    conn.send_message(Box::new(message)).await?;
-    Ok(())
+    self
+      .connected()?
+      .command_handle()
+      .light_command(
+        key,
+        state,
+        brightness,
+        color_mode,
+        color_brightness,
+        rgb,
+        white,
+        color_temperature,
+        cold_white,
+        warm_white,
+        transition_length,
+        flash_length,
+        effect,
+      )
+      .await
   }
 
   /// Send the current state of a Home Assistant entity to the device.

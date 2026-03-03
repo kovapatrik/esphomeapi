@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use esphomeapi::{
-  Client,
+  CommandHandle,
   model::{EntityState, LightInfo, LightState},
 };
 use tokio::sync::watch;
@@ -144,14 +144,14 @@ impl<'a> LightCommandBuilder<'a> {
 
 #[derive(Clone)]
 pub struct Light {
-  client: Arc<Client>,
+  client: Arc<CommandHandle>,
   info: LightInfo,
   state: watch::Receiver<Option<EntityState>>,
 }
 
 impl Light {
   pub fn new(
-    client: Arc<Client>,
+    client: Arc<CommandHandle>,
     info: LightInfo,
     state: watch::Receiver<Option<EntityState>>,
   ) -> Self {
