@@ -1,183 +1,172 @@
-use protobuf::{EnumOrUnknown, Message as _};
-use tokio::sync::{broadcast, oneshot};
-
-use crate::{
-  connection::{Connected, Connection, Disconnected},
-  model::{
-    parse_user_service, CameraImage, ColorMode, DeviceInfo, EntityInfo, EntityState,
-    HomeAssistantEvent, HomeassistantActionRequest, LogEvent, LogLevel, UserService,
-    LIST_ENTITIES_SERVICES_RESPONSE_TYPES,
-  },
-  utils::Options as _,
-};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use protobuf::{EnumOrUnknown, Message as _};
+use tokio::sync::{broadcast, oneshot};
+use tokio::time::timeout;
+use tracing::{info, warn};
+
+use crate::connection::{
+  Connected, Connection, ConnectionConfig, ProtobufMessage, RouterHandle, SharedChannels,
+};
+use crate::model::{
+  parse_user_service, CameraImage, ColorMode, DeviceInfo, EntityInfo, EntityState,
+  HomeAssistantEvent, HomeassistantActionRequest, LogEvent, LogLevel, UserService,
+  LIST_ENTITIES_SERVICES_RESPONSE_TYPES,
+};
+use crate::utils::Options as _;
 use crate::{proto, CommandHandle, Result};
 
-/// Internal enum to wrap both connection states
-enum ConnectionState {
-  Disconnected(Connection<Disconnected>),
-  Connected(Connection<Connected>),
-}
-
+/// A self-reconnecting ESPHome client.
+///
+/// `Client` is cheap to clone — all clones share the same connection, broadcast
+/// channels, and reconnect task.  The reconnect task runs automatically whenever
+/// the device drops the connection abruptly (e.g. `BrokenPipe`).  A graceful
+/// `DisconnectRequest` from the device stops the reconnect loop and fires
+/// `on_device_disconnect()`.
+#[derive(Clone)]
 pub struct Client {
-  /// The wrapped connection, using Option to allow state transitions
-  connection: Option<ConnectionState>,
+  /// Long-lived broadcast channels shared across reconnects.
+  channels: Arc<SharedChannels>,
+  /// Swappable router handle — updated atomically on each reconnect.
+  router: Arc<RwLock<RouterHandle>>,
+  /// Fires when the connection drops (both graceful and abrupt).
+  disconnect_tx: broadcast::Sender<()>,
+  /// Fires after each successful automatic reconnect.
+  reconnect_tx: broadcast::Sender<()>,
+  /// Set to `true` by `disconnect()` to prevent reconnect after a deliberate disconnect.
+  cancelled: Arc<AtomicBool>,
 }
 
 impl Client {
-  pub fn new(
-    address: String,
+  /// Connect to an ESPHome device and start the automatic reconnect loop.
+  pub async fn connect(
+    host: String,
     port: u32,
     password: Option<String>,
     expected_name: Option<String>,
     psk: Option<String>,
     client_info: Option<String>,
     keep_alive_duration: Option<u32>,
-  ) -> Self {
-    Self {
-      connection: Some(ConnectionState::Disconnected(Connection::new(
-        address,
-        port,
-        password,
-        expected_name,
-        psk,
-        client_info,
-        keep_alive_duration,
-      ))),
-    }
-  }
+  ) -> Result<Self> {
+    let config = ConnectionConfig {
+      host,
+      port,
+      password,
+      expected_name,
+      psk,
+      client_info: client_info.unwrap_or_else(|| "esphome-rs".to_string()),
+      keep_alive_duration: Duration::from_secs(keep_alive_duration.unwrap_or(20) as u64),
+    };
 
-  /// Connect to the ESPHome device
-  pub async fn connect(&mut self, login: bool) -> Result<()> {
-    let conn = self
-      .connection
-      .take()
-      .ok_or("Connection state is invalid")?;
+    let channels = Arc::new(SharedChannels::new());
 
-    match conn {
-      ConnectionState::Disconnected(c) => {
-        let connected = c.connect(login).await?;
-        self.connection = Some(ConnectionState::Connected(connected));
-        Ok(())
-      }
-      ConnectionState::Connected(c) => {
-        // Already connected, put it back
-        self.connection = Some(ConnectionState::Connected(c));
-        Err("Already connected".into())
-      }
-    }
-  }
-
-  /// Wait for the ESPHome device to initiate a disconnect.
-  ///
-  /// Blocks until the device sends `DisconnectRequest`.  At that point the
-  /// router has already replied with `DisconnectResponse` and all tasks are
-  /// torn down.  The client transitions to disconnected state so it can be
-  /// reconnected later.
-  pub async fn wait_for_device_disconnect(&mut self) -> Result<()> {
-    let conn = self
-      .connection
-      .take()
-      .ok_or("Connection state is invalid")?;
-
-    match conn {
-      ConnectionState::Connected(c) => {
-        let disconnected = c.wait_for_device_disconnect().await?;
-        self.connection = Some(ConnectionState::Disconnected(disconnected));
-        Ok(())
-      }
-      ConnectionState::Disconnected(c) => {
-        self.connection = Some(ConnectionState::Disconnected(c));
-        Err("Not connected".into())
-      }
-    }
-  }
-
-  /// Disconnect from the ESPHome device
-  pub async fn disconnect(&mut self) -> Result<()> {
-    let conn = self
-      .connection
-      .take()
-      .ok_or("Connection state is invalid")?;
-
-    match conn {
-      ConnectionState::Connected(c) => {
-        let disconnected = c.disconnect().await?;
-        self.connection = Some(ConnectionState::Disconnected(disconnected));
-        Ok(())
-      }
-      ConnectionState::Disconnected(c) => {
-        // Already disconnected, put it back
-        self.connection = Some(ConnectionState::Disconnected(c));
-        Ok(())
-      }
-    }
-  }
-
-  /// Check if connected
-  pub fn is_connected(&self) -> bool {
-    matches!(self.connection, Some(ConnectionState::Connected(_)))
-  }
-
-  /// Return a cloneable handle for sending device commands.
-  ///
-  /// The handle is cheap to clone and holds only a reference to the
-  /// message router, so it does not prevent `disconnect()` from being called.
-  pub fn command_handle(&self) -> Result<CommandHandle> {
-    Ok(self.connected()?.command_handle())
-  }
-
-  /// Take the one-shot receiver that resolves when the device initiates a disconnect.
-  ///
-  /// Returns `None` if not connected or already taken.  Pass the receiver into a
-  /// background task to react to device-initiated disconnects without holding a
-  /// `&mut Client` reference inside the task.
-  pub fn take_device_disconnect_receiver(&mut self) -> Option<oneshot::Receiver<()>> {
-    match &mut self.connection {
-      Some(ConnectionState::Connected(c)) => c.take_device_disconnect_rx(),
-      _ => None,
-    }
-  }
-
-  /// Get a reference to the connected connection, or return an error
-  fn connected(&self) -> Result<&Connection<Connected>> {
-    match &self.connection {
-      Some(ConnectionState::Connected(c)) => Ok(c),
-      Some(ConnectionState::Disconnected(_)) => Err("Not connected".into()),
-      None => Err("Connection state is invalid".into()),
-    }
-  }
-
-  pub async fn device_info(&self) -> Result<DeviceInfo> {
-    let conn = self.connected()?;
-    let message = proto::api::DeviceInfoRequest::default();
-
-    let response = conn
-      .send_message_await_response(
-        Box::new(message),
-        proto::api::DeviceInfoResponse::get_option_id(),
-      )
+    let mut conn = Connection::new_from_config(config.clone())
+      .connect_with_channels(true, Arc::clone(&channels))
       .await?;
 
-    let response = proto::api::DeviceInfoResponse::parse_from_bytes(&response.protobuf_data)?;
+    let router_handle = conn.router_handle().clone();
+    let router = Arc::new(RwLock::new(router_handle));
+    let disconnect_rx = conn.take_device_disconnect_rx().unwrap();
 
-    Ok(response.into())
+    let (disconnect_tx, _) = broadcast::channel(1);
+    let (reconnect_tx, _) = broadcast::channel(1);
+    let cancelled = Arc::new(AtomicBool::new(false));
+
+    Self::spawn_reconnect_task(
+      config,
+      Arc::clone(&channels),
+      Arc::clone(&router),
+      conn,
+      disconnect_rx,
+      disconnect_tx.clone(),
+      reconnect_tx.clone(),
+      Arc::clone(&cancelled),
+    );
+
+    Ok(Self {
+      channels,
+      router,
+      disconnect_tx,
+      reconnect_tx,
+      cancelled,
+    })
   }
 
+  // ── Event subscriptions ────────────────────────────────────────────────────
+
+  /// Subscribe to connection drop events (both abrupt and graceful).
+  pub fn on_device_disconnect(&self) -> broadcast::Receiver<()> {
+    self.disconnect_tx.subscribe()
+  }
+
+  /// Subscribe to successful automatic reconnect events.
+  pub fn on_reconnect(&self) -> broadcast::Receiver<()> {
+    self.reconnect_tx.subscribe()
+  }
+
+  /// Get a receiver for entity state updates.
+  pub fn states_receiver(&self) -> broadcast::Receiver<EntityState> {
+    self.channels.subscribe_states()
+  }
+
+  /// Get a receiver for Home Assistant state events.
+  pub fn home_assistant_states_receiver(&self) -> broadcast::Receiver<HomeAssistantEvent> {
+    self.channels.subscribe_home_assistant_events()
+  }
+
+  /// Get a receiver for log events.
+  pub fn logs_receiver(&self) -> broadcast::Receiver<LogEvent> {
+    self.channels.subscribe_logs()
+  }
+
+  /// Get a receiver for Home Assistant action request events.
+  pub fn home_assistant_action_requests_receiver(
+    &self,
+  ) -> broadcast::Receiver<HomeassistantActionRequest> {
+    self.channels.subscribe_action_requests()
+  }
+
+  /// Get a receiver for camera image frames.
+  pub fn camera_receiver(&self) -> broadcast::Receiver<CameraImage> {
+    self.channels.subscribe_camera()
+  }
+
+  // ── Command handle ─────────────────────────────────────────────────────────
+
+  /// Create a cloneable handle for sending device commands.
+  ///
+  /// All handles share the same underlying router reference and automatically
+  /// point to the new connection after a reconnect.
+  pub fn command_handle(&self) -> CommandHandle {
+    CommandHandle::from_shared(Arc::clone(&self.router))
+  }
+
+  // ── Device requests ────────────────────────────────────────────────────────
+
+  /// Fetch device info from the device.
+  pub async fn device_info(&self) -> Result<DeviceInfo> {
+    let response = self
+      .send_await_response(
+        proto::api::DeviceInfoRequest::default(),
+        proto::api::DeviceInfoResponse::get_option_id(),
+        Duration::from_secs(10),
+      )
+      .await?;
+    Ok(proto::api::DeviceInfoResponse::parse_from_bytes(&response.protobuf_data)?.into())
+  }
+
+  /// Fetch all entities and user services from the device.
   pub async fn list_entities_services(&self) -> Result<(Vec<EntityInfo>, Vec<UserService>)> {
-    let conn = self.connected()?;
-    let message = proto::api::ListEntitiesRequest::new();
-
     let entity_service_map = LIST_ENTITIES_SERVICES_RESPONSE_TYPES.clone();
-    let mut response_protobuf_types: Vec<u32> = entity_service_map.keys().cloned().collect();
-    // Add user defined services to the list of expected responses
-    response_protobuf_types.push(proto::api::ListEntitiesServicesResponse::get_option_id());
+    let mut response_types: Vec<u32> = entity_service_map.keys().cloned().collect();
+    response_types.push(proto::api::ListEntitiesServicesResponse::get_option_id());
 
-    let response = conn
-      .send_message_await_until(
-        Box::new(message),
-        response_protobuf_types,
+    let responses = self
+      .send_await_multiple(
+        proto::api::ListEntitiesRequest::new(),
+        response_types,
         proto::api::ListEntitiesDoneResponse::get_option_id(),
         Duration::from_secs(60),
       )
@@ -185,124 +174,89 @@ impl Client {
 
     let mut entities = Vec::new();
     let mut services = Vec::new();
-    for message in response {
+    for message in responses {
       if message.protobuf_type == proto::api::ListEntitiesServicesResponse::get_option_id() {
-        let parsed_service = parse_user_service(&message.protobuf_data)?;
-        services.push(parsed_service);
+        services.push(parse_user_service(&message.protobuf_data)?);
       } else {
         let parser = entity_service_map
           .get(&message.protobuf_type)
           .ok_or_else(|| format!("Unknown message type: {}", message.protobuf_type))?;
-        let parsed_message = parser(&message.protobuf_data)?;
-        entities.push(parsed_message);
+        entities.push(parser(&message.protobuf_data)?);
       }
     }
-
     Ok((entities, services))
   }
 
-  /// Send a SubscribeStatesRequest to the device.
-  ///
-  /// Call this once to start receiving entity state updates. After calling this,
-  /// use `states_receiver()` to get one or more independent receivers for the stream.
+  /// Ask the device to start sending entity state updates.
   pub async fn request_states(&self) -> Result<()> {
-    let conn = self.connected()?;
-    let message = proto::api::SubscribeStatesRequest::new();
-    conn.send_message(Box::new(message)).await
+    self.send(proto::api::SubscribeStatesRequest::new()).await
   }
 
-  /// Get a new receiver for entity state updates.
-  ///
-  /// Each call returns an independent receiver that gets all future state messages.
-  /// Call `request_states()` once before subscribing; this method can be called
-  /// multiple times without sending additional requests to the device.
-  pub fn states_receiver(&self) -> Result<broadcast::Receiver<EntityState>> {
-    let conn = self.connected()?;
-    Ok(conn.subscribe_states())
-  }
-
-  /// Send a SubscribeHomeAssistantStatesRequest to the device.
-  ///
-  /// Call this once to start receiving HA state events. After calling this,
-  /// use `home_assistant_states_receiver()` to get one or more independent receivers.
+  /// Ask the device to start sending Home Assistant state events.
   pub async fn request_home_assistant_states(&self) -> Result<()> {
-    let conn = self.connected()?;
-    let message = proto::api::SubscribeHomeAssistantStatesRequest::new();
-    conn.send_message(Box::new(message)).await
+    self
+      .send(proto::api::SubscribeHomeAssistantStatesRequest::new())
+      .await
   }
 
-  /// Get a new receiver for Home Assistant state events.
-  ///
-  /// Each call returns an independent receiver. Call `request_home_assistant_states()`
-  /// once before subscribing; this method can be called multiple times without
-  /// sending additional requests to the device.
-  pub fn home_assistant_states_receiver(&self) -> Result<broadcast::Receiver<HomeAssistantEvent>> {
-    let conn = self.connected()?;
-    Ok(conn.subscribe_home_assistant_events())
-  }
-
-  /// Send a SubscribeLogsRequest to the device.
-  ///
-  /// Call this once to start receiving log events. After calling this,
-  /// use `logs_receiver()` to get one or more independent receivers.
+  /// Ask the device to start sending log events.
   pub async fn request_logs(&self, level: LogLevel, dump_config: bool) -> Result<()> {
-    let conn = self.connected()?;
-    let message = proto::api::SubscribeLogsRequest {
-      level: EnumOrUnknown::new(level.into()),
-      dump_config,
-      ..Default::default()
-    };
-    conn.send_message(Box::new(message)).await
+    self
+      .send(proto::api::SubscribeLogsRequest {
+        level: EnumOrUnknown::new(level.into()),
+        dump_config,
+        ..Default::default()
+      })
+      .await
   }
 
-  /// Get a new receiver for log events.
-  ///
-  /// Each call returns an independent receiver. Call `request_logs()` once before
-  /// subscribing; this method can be called multiple times without sending additional
-  /// requests to the device.
-  pub fn logs_receiver(&self) -> Result<broadcast::Receiver<LogEvent>> {
-    let conn = self.connected()?;
-    Ok(conn.subscribe_logs())
-  }
-
-  /// Send a SubscribeHomeassistantServicesRequest to the device.
-  ///
-  /// Call this once to start receiving action request events. After calling this,
-  /// use `home_assistant_action_requests_receiver()` to get one or more independent receivers.
+  /// Ask the device to start sending Home Assistant action requests.
   pub async fn request_home_assistant_action_requests(&self) -> Result<()> {
-    let conn = self.connected()?;
-    let message = proto::api::SubscribeHomeassistantServicesRequest::new();
-    conn.send_message(Box::new(message)).await
+    self
+      .send(proto::api::SubscribeHomeassistantServicesRequest::new())
+      .await
   }
 
-  /// Get a new receiver for Home Assistant action request events.
-  ///
-  /// Each call returns an independent receiver. Call
-  /// `request_home_assistant_action_requests()` once before subscribing; this method
-  /// can be called multiple times without sending additional requests to the device.
-  pub fn home_assistant_action_requests_receiver(
+  /// Send the current state of a Home Assistant entity to the device.
+  pub async fn send_home_assistant_state(
     &self,
-  ) -> Result<broadcast::Receiver<HomeassistantActionRequest>> {
-    let conn = self.connected()?;
-    Ok(conn.subscribe_action_requests())
+    entity_id: String,
+    state: String,
+    attribute: Option<String>,
+  ) -> Result<()> {
+    self
+      .send(proto::api::HomeAssistantStateResponse {
+        entity_id,
+        state,
+        attribute: attribute.unwrap_or_default(),
+        ..Default::default()
+      })
+      .await
   }
 
-  /// Get a new receiver for camera image frames.
+  /// Initiate a graceful client-side disconnect.
   ///
-  /// Camera frames are sent automatically by the device once states are subscribed
-  /// via `request_states()`. Each call returns an independent receiver; call this
-  /// before `request_states()` to avoid missing early frames.
-  pub fn camera_receiver(&self) -> Result<broadcast::Receiver<CameraImage>> {
-    let conn = self.connected()?;
-    Ok(conn.subscribe_camera())
+  /// Sets the cancelled flag (preventing automatic reconnect), sends
+  /// `DisconnectRequest`, and waits up to 5 s for `DisconnectResponse`.
+  pub async fn disconnect(&self) -> Result<()> {
+    self.cancelled.store(true, Ordering::Relaxed);
+
+    let router = self.get_router();
+    let msg = ProtobufMessage {
+      protobuf_type: proto::api::DisconnectRequest::get_option_id(),
+      protobuf_data: proto::api::DisconnectRequest::default().write_to_bytes()?,
+    };
+    let _ = timeout(
+      Duration::from_secs(5),
+      router.send_await_response(msg, proto::api::DisconnectResponse::get_option_id()),
+    )
+    .await;
+
+    Ok(())
   }
 
   pub async fn switch_command(&self, key: u32, state: bool) -> Result<()> {
-    self
-      .connected()?
-      .command_handle()
-      .switch_command(key, state)
-      .await
+    self.command_handle().switch_command(key, state).await
   }
 
   pub async fn light_command(
@@ -322,7 +276,6 @@ impl Client {
     effect: Option<String>,
   ) -> Result<()> {
     self
-      .connected()?
       .command_handle()
       .light_command(
         key,
@@ -342,25 +295,127 @@ impl Client {
       .await
   }
 
-  /// Send the current state of a Home Assistant entity to the device.
-  ///
-  /// This is used to respond to HomeAssistantEvent::StateRequest or
-  /// to update the device when a subscribed entity changes.
-  pub async fn send_home_assistant_state(
-    &self,
-    entity_id: String,
-    state: String,
-    attribute: Option<String>,
-  ) -> Result<()> {
-    let conn = self.connected()?;
-    let message = proto::api::HomeAssistantStateResponse {
-      entity_id,
-      state,
-      attribute: attribute.unwrap_or_default(),
-      ..Default::default()
-    };
+  fn get_router(&self) -> RouterHandle {
+    self.router.read().unwrap().clone()
+  }
 
-    conn.send_message(Box::new(message)).await?;
-    Ok(())
+  async fn send<M: protobuf::MessageFull>(&self, message: M) -> Result<()> {
+    let router = self.get_router();
+    router
+      .send(ProtobufMessage {
+        protobuf_type: M::get_option_id(),
+        protobuf_data: message.write_to_bytes()?,
+      })
+      .await
+  }
+
+  async fn send_await_response<M: protobuf::MessageFull>(
+    &self,
+    message: M,
+    response_type: u32,
+    duration: Duration,
+  ) -> Result<ProtobufMessage> {
+    let router = self.get_router();
+    timeout(
+      duration,
+      router.send_await_response(
+        ProtobufMessage {
+          protobuf_type: M::get_option_id(),
+          protobuf_data: message.write_to_bytes()?,
+        },
+        response_type,
+      ),
+    )
+    .await
+    .map_err(|_| "Timeout waiting for response")?
+  }
+
+  async fn send_await_multiple<M: protobuf::MessageFull>(
+    &self,
+    message: M,
+    response_types: Vec<u32>,
+    until_type: u32,
+    duration: Duration,
+  ) -> Result<Vec<ProtobufMessage>> {
+    let router = self.get_router();
+    let mut rx = router
+      .send_await_multiple(
+        ProtobufMessage {
+          protobuf_type: M::get_option_id(),
+          protobuf_data: message.write_to_bytes()?,
+        },
+        response_types,
+        until_type,
+      )
+      .await?;
+
+    let mut responses = Vec::new();
+    while let Ok(Some(msg)) = timeout(duration, rx.recv()).await {
+      responses.push(msg);
+    }
+    Ok(responses)
+  }
+
+  // ── Reconnect task ─────────────────────────────────────────────────────────
+
+  fn spawn_reconnect_task(
+    config: ConnectionConfig,
+    channels: Arc<SharedChannels>,
+    router: Arc<RwLock<RouterHandle>>,
+    initial_conn: Connection<Connected>,
+    initial_disconnect_rx: oneshot::Receiver<bool>,
+    disconnect_tx: broadcast::Sender<()>,
+    reconnect_tx: broadcast::Sender<()>,
+    cancelled: Arc<AtomicBool>,
+  ) {
+    tokio::spawn(async move {
+      // Keep the live connection alive here. Replacing it drops the old one,
+      // aborting its reader / router / keep-alive tasks.
+      let mut _live_conn = initial_conn;
+      let mut disconnect_rx = initial_disconnect_rx;
+
+      loop {
+        // true = abrupt (reconnect), false = graceful DisconnectRequest (no reconnect)
+        let should_reconnect = disconnect_rx.await.unwrap_or(true);
+        let _ = disconnect_tx.send(());
+
+        if !should_reconnect || cancelled.load(Ordering::Relaxed) {
+          info!("Connection closed — stopping reconnect loop.");
+          break;
+        }
+
+        info!("Connection lost, attempting to reconnect…");
+
+        let mut delay = Duration::from_secs(5);
+        let mut new_conn: Connection<Connected> = loop {
+          tokio::time::sleep(delay).await;
+
+          match Connection::new_from_config(config.clone())
+            .connect_with_channels(true, Arc::clone(&channels))
+            .await
+          {
+            Ok(conn) => break conn,
+            Err(e) => {
+              warn!("Reconnect failed: {e}, retrying in {delay:?}");
+              delay = (delay * 2).min(Duration::from_secs(60));
+            }
+          }
+        };
+
+        // Swap the router handle — all CommandHandle clones see the new connection.
+        *router.write().unwrap() = new_conn.router_handle().clone();
+
+        let Some(rx) = new_conn.take_device_disconnect_rx() else {
+          warn!("No disconnect receiver after reconnect — stopping reconnect loop.");
+          break;
+        };
+
+        _live_conn = new_conn; // drops old tasks, keeps new ones alive
+        disconnect_rx = rx;
+
+        let _ = reconnect_tx.send(());
+        info!("Reconnected successfully.");
+      }
+    });
   }
 }

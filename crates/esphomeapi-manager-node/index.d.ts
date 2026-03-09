@@ -48,7 +48,7 @@ export declare class Manager {
    * Use this when `subscribe_home_assistant_states` has already been called
    * and you need a second independent callback.
    */
-  onHomeAssistantState(callback: ((arg: HomeAssistantEvent) => void)): void
+  onHomeAssistantState(callback: ((arg: HomeAssistantEvent) => void)): Promise<void>
   /**
    * Subscribe to Home Assistant action request events.
    *
@@ -61,7 +61,7 @@ export declare class Manager {
    * Register an additional listener for Home Assistant action requests without
    * sending a new subscription request to the device.
    */
-  onHomeAssistantActionRequest(callback: ((arg: HomeassistantActionRequest) => void)): void
+  onHomeAssistantActionRequest(callback: ((arg: HomeassistantActionRequest) => void)): Promise<void>
   /**
    * Subscribe to ESPHome logs.
    *
@@ -74,7 +74,7 @@ export declare class Manager {
    * Register an additional listener for ESPHome logs without
    * sending a new subscription request to the device.
    */
-  onLogs(callback: ((arg: LogEvent) => void)): void
+  onLogs(callback: ((arg: LogEvent) => void)): Promise<void>
   /**
    * Send the current state of a Home Assistant entity to the device.
    *
@@ -93,6 +93,11 @@ export declare class Manager {
    * ```
    */
   onDeviceDisconnect(): Promise<void>
+  /**
+   * Returns a Promise that resolves the next time the manager successfully
+   * reconnects after a device-initiated disconnect.
+   */
+  onReconnect(): Promise<void>
   disconnect(): Promise<void>
 }
 

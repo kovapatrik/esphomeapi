@@ -13,8 +13,6 @@ mod utils;
 
 pub use client::Client;
 pub use command_handle::CommandHandle;
-pub use connection::{Connected, Connection, Disconnected};
-pub use utils::Options;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;

@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock};
+
 use protobuf::EnumOrUnknown;
 
 use crate::connection::{ProtobufMessage, RouterHandle};
@@ -8,27 +10,33 @@ use crate::{proto, Result};
 /// A cloneable handle for sending commands to a connected ESPHome device.
 ///
 /// Obtained via [`Client::command_handle()`] after a successful connection.
-/// Holds only a reference to the underlying message router, so cloning is
-/// cheap and multiple handles can coexist without blocking connection
-/// lifecycle methods (`connect`, `disconnect`).
+/// All clones share the same underlying router reference, so calling
+/// [`update_from`](CommandHandle::update_from) on any clone (e.g. after a
+/// reconnect) immediately affects every entity that holds a clone.
 #[derive(Clone)]
 pub struct CommandHandle {
-  router: RouterHandle,
+  router: Arc<RwLock<RouterHandle>>,
 }
 
 impl CommandHandle {
-  pub(crate) fn new(router: RouterHandle) -> Self {
+  /// Create a handle that shares an existing `Arc<RwLock<RouterHandle>>`.
+  ///
+  /// All clones point to the same arc — swapping the router on reconnect is
+  /// immediately visible to every entity that holds a clone.
+  pub(crate) fn from_shared(router: Arc<RwLock<RouterHandle>>) -> Self {
     Self { router }
   }
 
+  /// Acquire a read lock long enough to clone the `RouterHandle`, then drop
+  /// the lock before awaiting — avoids holding a sync lock across `.await`.
   async fn send_proto<M>(&self, message: M) -> Result<()>
   where
     M: protobuf::MessageFull,
   {
+    let router = self.router.read().unwrap().clone();
     let protobuf_type = M::get_option_id();
     let protobuf_data = message.write_to_bytes()?;
-    self
-      .router
+    router
       .send(ProtobufMessage {
         protobuf_type,
         protobuf_data,

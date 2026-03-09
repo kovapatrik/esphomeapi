@@ -118,14 +118,11 @@ impl Manager {
   /// Use this when `subscribe_home_assistant_states` has already been called
   /// and you need a second independent callback.
   #[napi]
-  pub fn on_home_assistant_state(
+  pub async fn on_home_assistant_state(
     &self,
     callback: ThreadsafeFunction<HomeAssistantEvent, (), HomeAssistantEvent, Status, false, true>,
   ) -> Result<()> {
-    let mut rx = self
-      .inner
-      .home_assistant_states_receiver()
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
+    let mut rx = self.inner.home_assistant_states_receiver();
 
     napi::bindgen_prelude::spawn(async move {
       loop {
@@ -193,7 +190,7 @@ impl Manager {
   /// Register an additional listener for Home Assistant action requests without
   /// sending a new subscription request to the device.
   #[napi]
-  pub fn on_home_assistant_action_request(
+  pub async fn on_home_assistant_action_request(
     &self,
     callback: ThreadsafeFunction<
       HomeassistantActionRequest,
@@ -204,10 +201,7 @@ impl Manager {
       true,
     >,
   ) -> Result<()> {
-    let mut rx = self
-      .inner
-      .home_assistant_action_requests_receiver()
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
+    let mut rx = self.inner.home_assistant_action_requests_receiver();
 
     napi::bindgen_prelude::spawn(async move {
       loop {
@@ -267,14 +261,11 @@ impl Manager {
   /// Register an additional listener for ESPHome logs without
   /// sending a new subscription request to the device.
   #[napi]
-  pub fn on_logs(
+  pub async fn on_logs(
     &self,
     callback: ThreadsafeFunction<LogEvent, (), LogEvent, Status, false, true>,
   ) -> Result<()> {
-    let mut rx = self
-      .inner
-      .logs_receiver()
-      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
+    let mut rx = self.inner.logs_receiver();
 
     napi::bindgen_prelude::spawn(async move {
       loop {
@@ -327,8 +318,18 @@ impl Manager {
       .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
   }
 
+  /// Returns a Promise that resolves the next time the manager successfully
+  /// reconnects after a device-initiated disconnect.
   #[napi]
-  pub async unsafe fn disconnect(&mut self) -> Result<()> {
+  pub async fn on_reconnect(&self) -> Result<()> {
+    let mut rx = self.inner.on_reconnect();
+    rx.recv()
+      .await
+      .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+  }
+
+  #[napi]
+  pub async fn disconnect(&self) -> Result<()> {
     self
       .inner
       .disconnect()

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use futures::SinkExt as _;
@@ -16,52 +17,30 @@ use crate::utils::Options as _;
 
 use super::codec::{EspHomeEncoder, ProtobufMessage};
 
-/// Tracks a pending request awaiting a response
-struct PendingRequest {
-  response_type: u32,
-  tx: oneshot::Sender<ProtobufMessage>,
+/// Long-lived broadcast channels shared across reconnects.
+///
+/// Created once per `Client` and passed into each new `MessageRouter`.
+/// Subscribers hold `broadcast::Receiver`s that keep working across reconnects
+/// because the senders never change.
+pub(crate) struct SharedChannels {
+  pub state_tx: broadcast::Sender<EntityState>,
+  pub ha_event_tx: broadcast::Sender<HomeAssistantEvent>,
+  pub log_tx: broadcast::Sender<LogEvent>,
+  pub action_request_tx: broadcast::Sender<HomeassistantActionRequest>,
+  pub camera_tx: broadcast::Sender<CameraImage>,
 }
 
-/// Tracks a pending request awaiting multiple responses until a terminator
-struct PendingMultiRequest {
-  response_types: Vec<u32>,
-  until_type: u32,
-  tx: mpsc::Sender<ProtobufMessage>,
-}
-
-/// Configuration for broadcast channel capacities
-#[derive(Clone)]
-pub struct RouterConfig {
-  pub state_channel_capacity: usize,
-  pub ha_event_channel_capacity: usize,
-  pub log_channel_capacity: usize,
-  pub service_channel_capacity: usize,
-  pub camera_channel_capacity: usize,
-}
-
-impl Default for RouterConfig {
-  fn default() -> Self {
+impl SharedChannels {
+  pub fn new() -> Self {
     Self {
-      state_channel_capacity: 64,
-      ha_event_channel_capacity: 32,
-      log_channel_capacity: 128,
-      service_channel_capacity: 32,
-      camera_channel_capacity: 8,
+      state_tx: broadcast::channel(64).0,
+      ha_event_tx: broadcast::channel(32).0,
+      log_tx: broadcast::channel(128).0,
+      action_request_tx: broadcast::channel(32).0,
+      camera_tx: broadcast::channel(8).0,
     }
   }
-}
 
-/// Handles for subscribing to different event streams
-#[derive(Clone)]
-pub struct SubscriptionHandles {
-  state_tx: broadcast::Sender<EntityState>,
-  ha_event_tx: broadcast::Sender<HomeAssistantEvent>,
-  log_tx: broadcast::Sender<LogEvent>,
-  action_request_tx: broadcast::Sender<HomeassistantActionRequest>,
-  camera_tx: broadcast::Sender<CameraImage>,
-}
-
-impl SubscriptionHandles {
   pub fn subscribe_states(&self) -> broadcast::Receiver<EntityState> {
     self.state_tx.subscribe()
   }
@@ -81,6 +60,19 @@ impl SubscriptionHandles {
   pub fn subscribe_camera(&self) -> broadcast::Receiver<CameraImage> {
     self.camera_tx.subscribe()
   }
+}
+
+/// Tracks a pending request awaiting a response
+struct PendingRequest {
+  response_type: u32,
+  tx: oneshot::Sender<ProtobufMessage>,
+}
+
+/// Tracks a pending request awaiting multiple responses until a terminator
+struct PendingMultiRequest {
+  response_types: Vec<u32>,
+  until_type: u32,
+  tx: mpsc::Sender<ProtobufMessage>,
 }
 
 /// Internal message type for communicating with the router task
@@ -106,14 +98,9 @@ pub enum RouterCommand {
 #[derive(Clone)]
 pub struct RouterHandle {
   command_tx: mpsc::Sender<RouterCommand>,
-  subscriptions: SubscriptionHandles,
 }
 
 impl RouterHandle {
-  pub fn subscriptions(&self) -> &SubscriptionHandles {
-    &self.subscriptions
-  }
-
   pub async fn send(&self, message: ProtobufMessage) -> crate::Result<()> {
     self
       .command_tx
@@ -173,62 +160,38 @@ pub struct MessageRouter {
   /// Writer for sending messages to the device
   writer: FramedWrite<BufWriter<OwnedWriteHalf>, EspHomeEncoder>,
 
-  // Broadcast channels for different event types
-  state_tx: broadcast::Sender<EntityState>,
-  ha_event_tx: broadcast::Sender<HomeAssistantEvent>,
-  log_tx: broadcast::Sender<LogEvent>,
-  action_request_tx: broadcast::Sender<HomeassistantActionRequest>,
-  camera_tx: broadcast::Sender<CameraImage>,
+  /// Shared broadcast channels (outlive this router instance)
+  channels: Arc<SharedChannels>,
 
   // Pending request tracking
   pending_single: Option<PendingRequest>,
   pending_multi: Option<PendingMultiRequest>,
 
-  // Signals when the device initiates a disconnect
-  device_disconnect_tx: Option<oneshot::Sender<()>>,
+  // Signals when the connection drops.
+  // Sends `true` for abrupt disconnect (reconnect), `false` for graceful DisconnectRequest.
+  device_disconnect_tx: Option<oneshot::Sender<bool>>,
 }
 
 impl MessageRouter {
   pub fn new(
     message_rx: mpsc::Receiver<ProtobufMessage>,
     writer: FramedWrite<BufWriter<OwnedWriteHalf>, EspHomeEncoder>,
-    config: RouterConfig,
-  ) -> (Self, RouterHandle, oneshot::Receiver<()>) {
-    let (state_tx, _) = broadcast::channel(config.state_channel_capacity);
-    let (ha_event_tx, _) = broadcast::channel(config.ha_event_channel_capacity);
-    let (log_tx, _) = broadcast::channel(config.log_channel_capacity);
-    let (action_request_tx, _) = broadcast::channel(config.service_channel_capacity);
-    let (camera_tx, _) = broadcast::channel(config.camera_channel_capacity);
-
+    channels: Arc<SharedChannels>,
+  ) -> (Self, RouterHandle, oneshot::Receiver<bool>) {
     let (command_tx, command_rx) = mpsc::channel(32);
-    let (device_disconnect_tx, device_disconnect_rx) = oneshot::channel();
-
-    let subscriptions = SubscriptionHandles {
-      state_tx: state_tx.clone(),
-      ha_event_tx: ha_event_tx.clone(),
-      log_tx: log_tx.clone(),
-      action_request_tx: action_request_tx.clone(),
-      camera_tx: camera_tx.clone(),
-    };
+    let (device_disconnect_tx, device_disconnect_rx) = oneshot::channel::<bool>();
 
     let router = Self {
       message_rx,
       command_rx,
       writer,
-      state_tx,
-      ha_event_tx,
-      log_tx,
-      action_request_tx,
-      camera_tx,
+      channels,
       pending_single: None,
       pending_multi: None,
       device_disconnect_tx: Some(device_disconnect_tx),
     };
 
-    let handle = RouterHandle {
-      command_tx,
-      subscriptions,
-    };
+    let handle = RouterHandle { command_tx };
 
     (router, handle, device_disconnect_rx)
   }
@@ -238,15 +201,28 @@ impl MessageRouter {
     loop {
       tokio::select! {
         // Handle incoming messages from the device
-        Some(message) = self.message_rx.recv() => {
-          if !self.handle_incoming_message(message).await {
-            break;
+        message = self.message_rx.recv() => {
+          match message {
+            Some(msg) => {
+              if !self.handle_incoming_message(msg).await {
+                break;
+              }
+            }
+            // Reader task exited — TCP connection lost (abrupt)
+            None => {
+              if let Some(tx) = self.device_disconnect_tx.take() {
+                let _ = tx.send(true);
+              }
+              break;
+            }
           }
         }
 
         // Handle commands from the RouterHandle
         Some(command) = self.command_rx.recv() => {
-          self.handle_command(command).await;
+          if !self.handle_command(command).await {
+            break;
+          }
         }
 
         // Exit when all channels are closed
@@ -310,7 +286,7 @@ impl MessageRouter {
     // Entity state updates
     if let Some(parser) = SUBCRIBE_STATES_RESPONSE_TYPES.get(&msg_type) {
       if let Ok(state) = parser(&message.protobuf_data) {
-        let _ = self.state_tx.send(state);
+        let _ = self.channels.state_tx.send(state);
         return;
       }
     }
@@ -321,7 +297,7 @@ impl MessageRouter {
         proto::api::SubscribeHomeAssistantStateResponse::parse_from_bytes(&message.protobuf_data)
       {
         let event: HomeAssistantEvent = proto_msg.into();
-        let _ = self.ha_event_tx.send(event);
+        let _ = self.channels.ha_event_tx.send(event);
         return;
       }
     }
@@ -332,7 +308,7 @@ impl MessageRouter {
         proto::api::HomeassistantActionRequest::parse_from_bytes(&message.protobuf_data)
       {
         let request: HomeassistantActionRequest = proto_msg.into();
-        let _ = self.action_request_tx.send(request);
+        let _ = self.channels.action_request_tx.send(request);
         return;
       }
     }
@@ -343,7 +319,7 @@ impl MessageRouter {
         proto::api::SubscribeLogsResponse::parse_from_bytes(&message.protobuf_data)
       {
         let event: LogEvent = proto_msg.into();
-        let _ = self.log_tx.send(event);
+        let _ = self.channels.log_tx.send(event);
         return;
       }
     }
@@ -354,21 +330,20 @@ impl MessageRouter {
         proto::api::CameraImageResponse::parse_from_bytes(&message.protobuf_data)
       {
         let image: CameraImage = proto_msg.into();
-        let _ = self.camera_tx.send(image);
+        let _ = self.channels.camera_tx.send(image);
         return;
       }
     }
   }
 
-  /// Returns `false` when the router loop should exit (device-initiated disconnect).
+  /// Returns `false` when the router loop should exit (device-initiated disconnect or write error).
   async fn handle_device_request(&mut self, message: ProtobufMessage) -> bool {
     let msg_type = message.protobuf_type;
 
     // Handle PingRequest
     if msg_type == proto::api::PingRequest::get_option_id() {
       let response = proto::api::PingResponse::default();
-      self.send_proto_message(&response).await;
-      return true;
+      return self.send_proto_message(&response).await;
     }
 
     // Handle GetTimeRequest
@@ -378,16 +353,15 @@ impl MessageRouter {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_secs() as u32;
-      self.send_proto_message(&response).await;
-      return true;
+      return self.send_proto_message(&response).await;
     }
 
-    // Handle DisconnectRequest (device-initiated)
+    // Handle DisconnectRequest (device-initiated graceful disconnect)
     if msg_type == proto::api::DisconnectRequest::get_option_id() {
       let response = proto::api::DisconnectResponse::default();
       self.send_proto_message(&response).await;
       if let Some(tx) = self.device_disconnect_tx.take() {
-        let _ = tx.send(());
+        let _ = tx.send(false); // graceful — do not reconnect
       }
       return false; // exit the router loop
     }
@@ -395,18 +369,17 @@ impl MessageRouter {
     true
   }
 
-  async fn handle_command(&mut self, command: RouterCommand) {
+  /// Returns `false` when the router loop should exit (write error = connection lost).
+  async fn handle_command(&mut self, command: RouterCommand) -> bool {
     match command {
-      RouterCommand::Send { message } => {
-        self.send_message(message).await;
-      }
+      RouterCommand::Send { message } => self.send_message(message).await,
       RouterCommand::SendAwaitResponse {
         message,
         response_type,
         tx,
       } => {
         self.pending_single = Some(PendingRequest { response_type, tx });
-        self.send_message(message).await;
+        self.send_message(message).await
       }
       RouterCommand::SendAwaitMultiple {
         message,
@@ -419,19 +392,25 @@ impl MessageRouter {
           until_type,
           tx,
         });
-        self.send_message(message).await;
+        self.send_message(message).await
       }
     }
   }
 
-  async fn send_message(&mut self, message: ProtobufMessage) {
+  /// Returns `false` when the write fails (connection lost).
+  async fn send_message(&mut self, message: ProtobufMessage) -> bool {
     if let Err(e) = self.writer.send(message).await {
       eprintln!("Error sending message: {:?}", e);
-      return;
+      if let Some(tx) = self.device_disconnect_tx.take() {
+        let _ = tx.send(true); // abrupt write failure
+      }
+      return false;
     }
+    true
   }
 
-  async fn send_proto_message<M: protobuf::Message + MessageDyn>(&mut self, message: &M) {
+  /// Returns `false` when the write fails (connection lost).
+  async fn send_proto_message<M: protobuf::Message + MessageDyn>(&mut self, message: &M) -> bool {
     let protobuf_type = message
       .descriptor_dyn()
       .proto()
@@ -445,6 +424,6 @@ impl MessageRouter {
         protobuf_type,
         protobuf_data,
       })
-      .await;
+      .await
   }
 }
