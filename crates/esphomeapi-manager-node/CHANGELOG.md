@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/kovapatrik/esphomeapi/compare/v0.3.0...v0.4.0) (2026-03-09)
+
+
+### Features
+
+* added reconnect logic, cleaned up lib ([15be9c0](https://github.com/kovapatrik/esphomeapi/commit/15be9c003840f7924e8689adfde7acfbfd32daa9))
+
 ## [0.3.0](https://github.com/kovapatrik/esphomeapi/compare/v0.2.0...v0.3.0) (2026-03-03)
 
 
