@@ -1,4 +1,8 @@
-use std::{collections::HashSet, net::Ipv4Addr, time::Duration};
+use std::{
+  collections::{HashMap, HashSet},
+  net::Ipv4Addr,
+  time::Duration,
+};
 
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use tracing::{error, info};
@@ -25,7 +29,7 @@ pub async fn discover(seconds: u32) -> Result<Vec<ServiceInfo>> {
   let mdns = ServiceDaemon::new()?;
   let receiver = mdns.browse(SERVICE_NAME)?;
 
-  let mut found_services = std::collections::HashMap::new();
+  let mut found_services = HashMap::new();
 
   info!("starting discovery");
 
@@ -44,8 +48,11 @@ pub async fn discover(seconds: u32) -> Result<Vec<ServiceInfo>> {
                 ty_domain: info.ty_domain.clone(),
                 sub_domain: info.get_subtype().to_owned(),
                 fullname: info.get_fullname().to_owned(),
-                server: info.get_hostname().to_owned(),
-                addresses: info.get_addresses_v4().clone(),
+                server: info.get_hostname()
+                      .trim_end_matches('.')
+                      .trim_end_matches(".local")
+                      .to_owned(),
+                addresses: info.get_addresses_v4(),
                 port: info.get_port()
               },
             );
@@ -53,6 +60,7 @@ pub async fn discover(seconds: u32) -> Result<Vec<ServiceInfo>> {
           Ok(_) => {}
           Err(err) => {
             error!(error = ?err, "failed to receive service event");
+            break;
           }
         }
       }

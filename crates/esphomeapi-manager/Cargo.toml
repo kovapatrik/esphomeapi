@@ -5,12 +5,12 @@ edition = "2024"
 
 [dependencies]
 esphomeapi = { path = "../esphomeapi" }
-tokio = { version = "1.45.0", features = [
-  "net",
-  "sync",
+tokio = { workspace = true, features = [
   "io-util",
-  "rt-multi-thread",
   "macros",
+  "net",
+  "rt-multi-thread",
   "signal",
+  "sync",
 ] }
 tracing.workspace = true

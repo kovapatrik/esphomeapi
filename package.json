@@ -1,6 +1,6 @@
 {
   "name": "esphomeapi",
-  "packageManager": "pnpm@10.5.2",
+  "packageManager": "pnpm@11.1.2+sha512.415a1cc25974731e75455c1468371be74c5aa5fb7621b50d4056d222451609f11412f23fd602e6169f1e060466641f798597e1be961a10688836a67b16569499",
   "version": "0.0.0",
   "description": "A Node.js native addon for ESPHome API",
   "author": "Patrik Kovalovszky <kovapatrik@gmail.com>",
@@ -26,7 +26,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
-    "@napi-rs/cli": "^3.0.0-alpha.92",
+    "@napi-rs/cli": "^3.6.2",
     "@taplo/cli": "^0.7.0",
     "ava": "^6.2.0",
     "tslib": "^2.7.0",
