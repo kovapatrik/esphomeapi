@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/kovapatrik/esphomeapi/compare/v0.4.0...v0.4.1) (2026-05-16)
+
+
+### Bug Fixes
+
+* dep update, discovery server name strip ([7f0448e](https://github.com/kovapatrik/esphomeapi/commit/7f0448e801f36c8ba1a8e9956d81f501b7f40722))
+
 ## [0.4.0](https://github.com/kovapatrik/esphomeapi/compare/v0.3.0...v0.4.0) (2026-03-09)
 
 
