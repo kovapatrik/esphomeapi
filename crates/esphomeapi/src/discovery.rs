@@ -19,8 +19,9 @@ pub struct ServiceInfo {
   /// <https://datatracker.ietf.org/doc/html/rfc6763#section-7.1>
   pub sub_domain: Option<String>, // <subservice>._sub.<service>.<domain>
 
-  pub fullname: String, // <instance>.<service>.<domain>
-  pub server: String,   // fully qualified name for service host
+  pub fullname: String,              // <instance>.<service>.<domain>
+  pub server: String,                // fully qualified name for service host
+  pub friendly_name: Option<String>, // friendly name set in the ESPHome yaml config file
   pub addresses: HashSet<Ipv4Addr>,
   pub port: u16,
 }
@@ -52,6 +53,7 @@ pub async fn discover(seconds: u32) -> Result<Vec<ServiceInfo>> {
                       .trim_end_matches('.')
                       .trim_end_matches(".local")
                       .to_owned(),
+                friendly_name: info.get_property_val_str("friendly_name").map(str::to_string),
                 addresses: info.get_addresses_v4(),
                 port: info.get_port()
               },
