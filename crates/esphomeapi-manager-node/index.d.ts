@@ -262,6 +262,7 @@ export interface ServiceInfo {
   subDomain?: string
   fullname: string
   server: string
+  friendlyName?: string
   addresses: Array<string>
   port: number
 }

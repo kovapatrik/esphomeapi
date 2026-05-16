@@ -9,6 +9,7 @@ pub struct ServiceInfo {
   pub sub_domain: Option<String>,
   pub fullname: String,
   pub server: String,
+  pub friendly_name: Option<String>,
   pub addresses: Vec<String>,
   pub port: u16,
 }
@@ -20,6 +21,7 @@ impl From<RustServiceInfo> for ServiceInfo {
       sub_domain: value.sub_domain,
       fullname: value.fullname,
       server: value.server,
+      friendly_name: value.friendly_name,
       addresses: value.addresses.iter().map(|a| a.to_string()).collect(),
       port: value.port,
     }
