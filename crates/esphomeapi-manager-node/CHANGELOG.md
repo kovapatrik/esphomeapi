@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/kovapatrik/esphomeapi/compare/v0.4.1...v0.4.2) (2026-05-17)
+
+
+### Bug Fixes
+
+* mapped friendly name in node binding ([561ef0c](https://github.com/kovapatrik/esphomeapi/commit/561ef0c529a15282638930d49d0030e193ce75a4))
+* use postbuild to align index.js ([d00b9bf](https://github.com/kovapatrik/esphomeapi/commit/d00b9bf88b13420ddd0814fded761e3e4743a063))
+
 ## [0.4.1](https://github.com/kovapatrik/esphomeapi/compare/v0.4.0...v0.4.1) (2026-05-16)
 
 
