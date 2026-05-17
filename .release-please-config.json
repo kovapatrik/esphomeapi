@@ -5,17 +5,7 @@
       "release-type": "node",
       "package-name": "@kovapatrik/esphomeapi-manager",
       "include-component-in-tag": false,
-      "tag-name": "v${version}",
-      "extra-files": [
-        {
-          "type": "generic",
-          "path": "crates/esphomeapi-manager-node/index.js",
-          "patterns": [
-            "bindingPackageVersion !== '(?<version>[0-9]+\\.[0-9]+\\.[0-9]+)'",
-            "expected (?<version>[0-9]+\\.[0-9]+\\.[0-9]+) but got"
-          ]
-        }
-      ]
+      "tag-name": "v${version}"
     }
   }
 }

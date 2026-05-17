@@ -36,7 +36,9 @@
   "scripts": {
     "artifacts": "pnpm exec napi artifacts",
     "build": "pnpm exec napi build --platform --release --no-dts-cache",
+    "postbuild": "node scripts/postbuild.js",
     "build:debug": "pnpm exec napi build --platform",
+    "postbuild:debug": "node scripts/postbuild.js",
     "create-npm-dirs": "pnpm exec napi create-npm-dirs",
     "prepublishOnly": "pnpm exec napi prepublish -t npm --no-gh-release",
     "test": "pnpm exec ava",
