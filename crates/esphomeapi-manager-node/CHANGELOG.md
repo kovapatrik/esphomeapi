@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/kovapatrik/esphomeapi/compare/v0.4.2...v0.4.3) (2026-11-14)
+
+
+### Bug Fixes
+
+* return connection errors from Manager::new instead of panicking ([4728307](https://github.com/kovapatrik/esphomeapi/commit/4728307cc17c9e0e24fbae1aa29a4e23df436db7))
+
 ## [0.4.2](https://github.com/kovapatrik/esphomeapi/compare/v0.4.1...v0.4.2) (2026-05-17)
 
 
