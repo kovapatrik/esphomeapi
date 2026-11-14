@@ -31,7 +31,7 @@ impl Manager {
     psk: Option<String>,
     client_info: Option<String>,
     keep_alive_duration: Option<u32>,
-  ) -> Manager {
+  ) -> Result<Manager> {
     let client = Client::connect(
       address,
       port,
@@ -41,11 +41,10 @@ impl Manager {
       client_info,
       keep_alive_duration,
     )
-    .await
-    .unwrap();
+    .await?;
 
-    let device_info = client.device_info().await.unwrap();
-    let (entities_response, services_response) = client.list_entities_services().await.unwrap();
+    let device_info = client.device_info().await?;
+    let (entities_response, services_response) = client.list_entities_services().await?;
 
     let command_handle = Arc::new(client.command_handle());
 
@@ -76,7 +75,7 @@ impl Manager {
       services.insert(service.key, service);
     }
 
-    client.request_states().await.unwrap();
+    client.request_states().await?;
 
     // The state receiver is tied to the long-lived SharedChannels — it keeps
     // working across reconnects without needing to be replaced.
@@ -100,12 +99,12 @@ impl Manager {
       }
     });
 
-    Manager {
+    Ok(Manager {
       client,
       device_info,
       entities,
       services,
-    }
+    })
   }
 
   pub fn get_entities(&self) -> &HashMap<u32, Entity> {

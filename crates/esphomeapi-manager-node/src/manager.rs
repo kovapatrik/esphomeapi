@@ -42,7 +42,8 @@ impl Manager {
       options.client_info,
       options.keep_alive_duration,
     )
-    .await;
+    .await
+    .map_err(|e| Error::from_reason(e.to_string()))?;
 
     let entities = manager
       .get_entities()
